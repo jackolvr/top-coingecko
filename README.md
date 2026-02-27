@@ -1,129 +1,87 @@
-# Bybit Top Gainers - Script Corrigido
+# Top 20 Gainers - Bybit USDT Perpétuos
 
-## 📋 Resumo
+Aplicação web React que exibe os 20 pares perpétuos USDT da Bybit com maiores valorizações em 24 horas.
 
-Script Python 3.12+ que consome a API pública da CoinGecko e retorna os 20 pares perpétuos USDT com maior % de valorização em 24h na corretora Bybit.
+**Repositório**: https://github.com/jackolvr/top-coingecko
+**Web App (Pages)**: https://jackolvr.github.io/top-coingecko
 
-## ✅ Funcionalidades
+## Recursos
 
-- ✓ Consome endpoint público `/derivatives` da CoinGecko
-- ✓ Filtra pares Bybit (mercado "Bybit (Futures)")
-- ✓ Filtra apenas contratos perpétuos USDT
-- ✓ Ordena por maior valorização 24h
-- ✓ Retorna top 20 com tabela formatada
-- ✓ Type hints 100%
-- ✓ Tratamento robusto de erros
-- ✓ 19 testes unitários
+- ✨ **Atualização em tempo real** - Dados atualizados a cada minuto
+- 📊 **Interface moderna** - Design dark com Tailwind CSS
+- ⚡ **Performance otimizada** - React com memoização e callbacks
+- 📱 **Responsivo** - Funciona em desktop, tablet e mobile
+- 🎯 **Best practices** - Vercel React patterns aplicados
 
-## 🚀 Como Usar
+## Tecnologias
 
-### Instalação
-```bash
-pip install requests
-```
+- **React 18** - Library UI
+- **Tailwind CSS** - Styling
+- **Lucide React** - Ícones
+- **CoinGecko API** - Dados de mercado (grátis, sem autenticação)
 
-### Executar
-```bash
-python bybit_top_gainers.py
-```
+## Deploy no Branch Pages
 
-### Saída Esperada
-```
-Buscando dados de derivativos da Bybit na CoinGecko...
-
-╔═══════════════════════════════════════════════════════════╗
-║ TOP 20 PARES PERPETUOS USDT — BYBIT                      ║
-║ Maiores Valorizações em 24 horas                         ║
-╚═══════════════════════════════════════════════════════════╝
-
-+-----------+------------------+------------------+
-| Par       | Preço (USD)      | Mudança 24h %    |
-+-----------+------------------+------------------+
-| POWERUSDT |       1.98       |       +115.30%   |
-| RIVERUSDT |       10.84      |        +15.80%   |
-| PIPPINUSDT|       0.7987     |         +5.60%   |
-+-----------+------------------+------------------+
-
-✓ Total: 20 pares USDT perpétuos encontrados
-```
-
-## 🧪 Testes
+### Setup Automático
 
 ```bash
-pip install pytest
-pytest test_bybit_top_gainers.py -v
+# No diretório do repositório
+chmod +x setup.sh
+./setup.sh
 ```
 
-### Cobertura
-- Validação de TabelaPar
-- Filtragem Bybit USDT perpétuos
-- Formatação de preços
-- Tratamento de erros
-- Casos extremos
+### Setup Manual
 
-## 📊 Arquitetura
+```bash
+# 1. Adicionar arquivos à branch pages
+git checkout -b pages
+cp index.html index.jsx package.json README.md .
 
-### TabelaPar (Dataclass)
-Representa um par com validação de dados
-
-### ClienteCoinGecko
-- `obter_pares_bybit()` - Orquestra busca e filtragem
-- `_buscar_todos_tickers()` - Consome API
-- `_filtrar_usdt_perpetuos()` - Filtra dados
-- `_eh_par_valido()` - Validação individual
-
-### FormatadorTabela
-- `formatar_preco()` - Precisão adequada por faixa
-- `exibir_tabela()` - Renderiza tabela ASCII
-
-## 🔧 Detalhes da API
-
-**Endpoint**: `GET /derivatives`  
-**URL**: `https://api.coingecko.com/api/v3/derivatives`  
-**Rate Limit**: 30 chamadas/min (plano gratuito)  
-**Atualização**: A cada 30 segundos
-
-### Filtros Aplicados
-1. `market.contains("Bybit")` 
-2. `symbol.endsWith("USDT")`
-3. `contract_type == "perpetual"`
-4. `price_percentage_change_24h != null`
-
-## 🎯 Melhorias vs Original
-
-| Item | Original | Corrigido |
-|------|----------|-----------|
-| Type Hints | ❌ | ✅ 100% |
-| Testes | ❌ | ✅ 19 testes |
-| Arquitetura | Procedural | OOP com 3 classes |
-| Erro 401 | ❌ | ✅ Resolvido |
-| Filtro Bybit | Incorreto | ✅ Correto (market) |
-| Filtro USDT | target/quote | ✅ symbol.endsWith |
-| Documentação | Mínima | Completa |
-
-## 📝 Campos Utilizados do Ticker
-
-```python
-{
-    "symbol": "BTCUSDT",           # Símbolo do par
-    "market": "Bybit (Futures)",   # Exchange
-    "price": 45000.5,             # Preço atual
-    "price_percentage_change_24h": 2.5,  # Mudança 24h
-    "contract_type": "perpetual"   # Tipo de contrato
-}
+# 2. Commit e push
+git add .
+git commit -m "feat: bybit top gainers web app"
+git push -u origin pages
 ```
 
-## 🤝 Contribuição
+### Configurar GitHub Pages
 
-Para melhorar:
-1. Adicione testes em `test_bybit_top_gainers.py`
-2. Mantenha type hints
-3. Siga convenção de nomes pt-br
-4. Execute `pytest` antes de commitar
+1. Repositório → **Settings** → **Pages**
+2. **Source**: Deploy from a branch
+3. **Branch**: `pages` / `/ (root)`
+4. **Save**
 
----
+⏱️ Site disponível em 2-3 minutos:
+```
+https://jackolvr.github.io/top-coingecko/
+```
 
-**Status**: ✅ Produção  
-**Python**: 3.12+  
-**Licença**: MIT
+## Estrutura
 
+```
+├── index.html          # App completa (React bundled)
+├── index.jsx           # Componente React (referência)
+├── package.json        # Metadados
+├── setup.sh            # Script de setup
+└── README.md           # Documentação
+```
+
+## Como Funciona
+
+1. **Busca**: CoinGecko API `/derivatives`
+2. **Filtro**: Apenas USDT perpétuos da Bybit
+3. **Ordenação**: Por % ganho em 24h
+4. **Exibição**: Top 20 em tabela
+5. **Atualização**: A cada 60s automaticamente
+
+## Otimizações Aplicadas
+
+- ✅ React.memo para componentes de lista
+- ✅ useCallback para callbacks estáveis
+- ✅ Lazy state initialization
+- ✅ Event delegation
+- ✅ CSS classes (zero JS overhead)
+- ✅ Abort controller para timeouts
+
+## Licença
+
+MIT
