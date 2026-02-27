@@ -1,0 +1,24 @@
+{
+  "name": "top-coingecko",
+  "version": "1.0.0",
+  "description": "Top 20 pares perpétuos USDT da Bybit - Web app React no branch pages",
+  "homepage": "https://jackolvr.github.io/top-coingecko",
+  "scripts": {
+    "build": "echo 'Build concluído: index.html pronto para GitHub Pages'",
+    "setup": "chmod +x setup.sh && ./setup.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jackolvr/top-coingecko.git"
+  },
+  "keywords": [
+    "bybit",
+    "crypto",
+    "gainers",
+    "trading",
+    "perpetual",
+    "coingecko"
+  ],
+  "author": "jackolvr",
+  "license": "MIT"
+}

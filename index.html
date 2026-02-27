@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Top 20 pares perpétuos USDT da Bybit - Maiores valorizações em 24 horas">
+    <meta name="theme-color" content="#0f172a">
+    <title>Top 20 Gainers - Bybit USDT Perpétuos</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/latest/umd/lucide.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html {
+            scroll-behavior: smooth;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+    </style>
+</head>
+<body class="bg-slate-950">
+    <div id="root"></div>
+
+    <script type="module">
+        const { useState, useEffect, useMemo, useCallback, Fragment: Fr } = React;
+        const { createRoot } = ReactDOM;
+
+        const API_COINGECKO = 'https://api.coingecko.com/api/v3/derivatives';
+        const TIMEOUT_PADRAO = 15000;
+
+        function useFetchTopGainers() {
+            const [estado_carregamento, setEstadoCarregamento] = useState(true);
+            const [erro, setErro] = useState(null);
+            const [pares, setPares] = useState([]);
+            const [ultima_atualizacao, setUltimaAtualizacao] = useState(null);
+
+            const buscar_pares = useCallback(async () => {
+                setEstadoCarregamento(true);
+                setErro(null);
+
+                try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), TIMEOUT_PADRAO);
+
+                    const url = new URL(API_COINGECKO);
+                    url.searchParams.set('include_tickers', 'perpetual');
+                    url.searchParams.set('order', 'name');
+                    url.searchParams.set('per_page', '100');
+                    url.searchParams.set('page', '1');
+
+                    const resposta = await fetch(url.toString(), {
+                        method: 'GET',
+                        headers: { 'accept': 'application/json' },
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeout);
+
+                    if (resposta.status === 429) {
+                        setErro('⚠️ Limite de requisições atingido. Tente novamente em alguns minutos.');
+                        setEstadoCarregamento(false);
+                        return;
+                    }
+
+                    if (!resposta.ok) {
+                        throw new Error(`Erro ${resposta.status}: ${resposta.statusText}`);
+                    }
+
+                    const dados = await resposta.json();
+                    const tickers_filtrados = Array.isArray(dados) ? dados : [];
+
+                    const pares_processados = tickers_filtrados
+                        .filter(ticker => _eh_par_valido(ticker))
+                        .map(ticker => ({
+                            simbolo: ticker.symbol,
+                            preco: parseFloat(ticker.price || ticker.last || 0),
+                            percentual_24h: parseFloat(ticker.price_percentage_change_24h || 0)
+                        }))
+                        .sort((a, b) => b.percentual_24h - a.percentual_24h)
+                        .slice(0, 20);
+
+                    setPares(pares_processados);
+                    setUltimaAtualizacao(new Date().toLocaleTimeString('pt-BR'));
+                } catch (err) {
+                    const mensagem = err.name === 'AbortError' 
+                        ? 'Timeout: Requisição demorou muito.' 
+                        : err.message;
+                    setErro(`❌ ${mensagem}`);
+                } finally {
+                    setEstadoCarregamento(false);
+                }
+            }, []);
+
+            useEffect(() => {
+                buscar_pares();
+                const intervalo = setInterval(buscar_pares, 60000);
+                return () => clearInterval(intervalo);
+            }, [buscar_pares]);
+
+            return { pares, estado_carregamento, erro, ultima_atualizacao, buscar_pares };
+        }
+
+        function _eh_par_valido(ticker) {
+            const market = String(ticker.market || '').toLowerCase();
+            const symbol = String(ticker.symbol || '');
+            
+            return (
+                market.includes('bybit') &&
+                symbol.endsWith('USDT') &&
+                (ticker.contract_type || '').toLowerCase() === 'perpetual' &&
+                ticker.price_percentage_change_24h != null
+            );
+        }
+
+        function formatar_preco(preco) {
+            if (preco >= 1000) {
+                return new Intl.NumberFormat('pt-BR', {
+                    style: 'currency',
+                    currency: 'USD',
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                }).format(preco).replace('US$', '$');
+            } else if (preco >= 1) {
+                return `$${preco.toFixed(4)}`;
+            } else {
+                return `$${preco.toFixed(8)}`;
+            }
+        }
+
+        function CelulaMudanca({ percentual }) {
+            const classe_cor = percentual >= 0 ? 'text-green-500' : 'text-red-500';
+            return React.createElement('span', {
+                className: `font-semibold ${classe_cor}`
+            }, `${percentual >= 0 ? '+' : ''}${percentual.toFixed(2)}%`);
+        }
+
+        function LinhaTabela({ par }) {
+            return React.createElement('tr', {
+                className: "border-b border-slate-700 hover:bg-slate-800/50 transition-colors"
+            },
+                React.createElement('td', {
+                    className: "px-6 py-4 text-left font-medium text-slate-100"
+                }, par.simbolo),
+                React.createElement('td', {
+                    className: "px-6 py-4 text-right font-mono text-slate-300"
+                }, formatar_preco(par.preco)),
+                React.createElement('td', {
+                    className: "px-6 py-4 text-right"
+                }, React.createElement(CelulaMudanca, { percentual: par.percentual_24h }))
+            );
+        }
+
+        function AplicacaoTopGainers() {
+            const { pares, estado_carregamento, erro, ultima_atualizacao, buscar_pares } = useFetchTopGainers();
+
+            return React.createElement('div', {
+                className: "min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
+            },
+                React.createElement('div', {
+                    className: "absolute inset-0 opacity-5 pointer-events-none",
+                    style: {
+                        backgroundImage: 'linear-gradient(0deg, transparent 24%, rgba(15,23,42,0.3) 25%, rgba(15,23,42,0.3) 26%, transparent 27%, transparent 74%, rgba(15,23,42,0.3) 75%, rgba(15,23,42,0.3) 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, rgba(15,23,42,0.3) 25%, rgba(15,23,42,0.3) 26%, transparent 27%, transparent 74%, rgba(15,23,42,0.3) 75%, rgba(15,23,42,0.3) 76%, transparent 77%, transparent)',
+                        backgroundSize: '50px 50px'
+                    }
+                }),
+                React.createElement('div', {
+                    className: "relative z-10 max-w-6xl mx-auto px-4 py-12"
+                },
+                    React.createElement('div', {
+                        className: "mb-12 text-center"
+                    },
+                        React.createElement('div', {
+                            className: "flex items-center justify-center gap-3 mb-4"
+                        },
+                            React.createElement('div', {
+                                className: "relative"
+                            },
+                                React.createElement('div', {
+                                    className: "absolute inset-0 bg-cyan-500 blur-xl opacity-30 rounded-full"
+                                }),
+                                React.createElement('svg', {
+                                    className: "relative w-12 h-12 text-cyan-400",
+                                    width: "24",
+                                    height: "24",
+                                    viewBox: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    strokeWidth: "1.5",
+                                    strokeLinecap: "round",
+                                    strokeLinejoin: "round"
+                                }, React.createElement('polyline', { points: "23 6 13.5 15.5 8.5 10.5 1 17" }),
+                                   React.createElement('polyline', { points: "17 6 23 6 23 12" }))
+                            ),
+                            React.createElement('h1', {
+                                className: "text-5xl font-bold text-white tracking-tight"
+                            }, "Top 20 Gainers")
+                        ),
+                        React.createElement('p', {
+                            className: "text-slate-400 text-lg mb-2"
+                        }, "Pares Perpétuos USDT da Bybit"),
+                        React.createElement('p', {
+                            className: "text-slate-500 text-sm"
+                        }, "Maiores Valorizações em 24 horas")
+                    ),
+                    React.createElement('div', {
+                        className: "bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-xl shadow-2xl overflow-hidden"
+                    },
+                        React.createElement('div', {
+                            className: "flex items-center justify-between px-8 py-5 bg-slate-800/40 border-b border-slate-800"
+                        },
+                            React.createElement('div', {
+                                className: "text-sm text-slate-400"
+                            }, ultima_atualizacao && 
+                                React.createElement(Fr, null, 
+                                    "Atualizado às ",
+                                    React.createElement('span', {
+                                        className: "text-cyan-400 font-semibold"
+                                    }, ultima_atualizacao)
+                                )
+                            ),
+                            React.createElement('button', {
+                                onClick: buscar_pares,
+                                disabled: estado_carregamento,
+                                className: "inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-medium text-sm"
+                            },
+                                React.createElement('svg', {
+                                    className: `w-4 h-4 ${estado_carregamento ? 'animate-spin' : ''}`,
+                                    width: "24",
+                                    height: "24",
+                                    viewBox: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    strokeWidth: "2",
+                                    strokeLinecap: "round",
+                                    strokeLinejoin: "round"
+                                }, React.createElement('polyline', { points: "23 4 23 10 17 10" }),
+                                   React.createElement('polyline', { points: "1 20 1 14 7 14" }),
+                                   React.createElement('path', { d: "M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36" })),
+                                "Atualizar"
+                            )
+                        ),
+                        erro ? React.createElement('div', {
+                            className: "p-8"
+                        },
+                            React.createElement('div', {
+                                className: "flex items-start gap-3 p-4 bg-red-950/30 border border-red-800/50 rounded-lg"
+                            },
+                                React.createElement('svg', {
+                                    className: "w-5 h-5 text-red-400 flex-shrink-0 mt-0.5",
+                                    width: "24",
+                                    height: "24",
+                                    viewBox: "0 0 24 24",
+                                    fill: "none",
+                                    stroke: "currentColor",
+                                    strokeWidth: "2"
+                                }, React.createElement('circle', { cx: "12", cy: "12", r: "10" }),
+                                   React.createElement('line', { x1: "12", y1: "8", x2: "12", y2: "12" }),
+                                   React.createElement('line', { x1: "12", y1: "16", x2: "12.01", y2: "16" })),
+                                React.createElement('p', {
+                                    className: "text-red-200"
+                                }, erro)
+                            )
+                        ) : estado_carregamento && pares.length === 0 ? React.createElement('div', {
+                            className: "p-12 text-center"
+                        },
+                            React.createElement('div', {
+                                className: "inline-flex flex-col items-center gap-4"
+                            },
+                                React.createElement('div', {
+                                    className: "relative w-12 h-12"
+                                },
+                                    React.createElement('div', {
+                                        className: "absolute inset-0 bg-cyan-500 rounded-full animate-pulse"
+                                    }),
+                                    React.createElement('div', {
+                                        className: "absolute inset-2 bg-slate-900 rounded-full"
+                                    })
+                                ),
+                                React.createElement('p', {
+                                    className: "text-slate-400"
+                                }, "Carregando dados...")
+                            )
+                        ) : pares.length === 0 ? React.createElement('div', {
+                            className: "p-8 text-center text-slate-400"
+                        }, "Nenhum par encontrado") : React.createElement('div', {
+                            className: "overflow-x-auto"
+                        },
+                            React.createElement('table', {
+                                className: "w-full"
+                            },
+                                React.createElement('thead', null,
+                                    React.createElement('tr', {
+                                        className: "bg-slate-800/60 border-b border-slate-700"
+                                    },
+                                        React.createElement('th', {
+                                            className: "px-6 py-4 text-left text-xs font-semibold text-slate-300 uppercase tracking-wider"
+                                        }, "Par"),
+                                        React.createElement('th', {
+                                            className: "px-6 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider"
+                                        }, "Preço (USD)"),
+                                        React.createElement('th', {
+                                            className: "px-6 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider"
+                                        }, "Mudança 24h")
+                                    )
+                                ),
+                                React.createElement('tbody', null,
+                                    pares.map((par) => React.createElement(LinhaTabela, {
+                                        key: par.simbolo,
+                                        par: par
+                                    }))
+                                )
+                            )
+                        ),
+                        pares.length > 0 && React.createElement('div', {
+                            className: "px-8 py-4 bg-slate-800/40 border-t border-slate-800 text-sm text-slate-400"
+                        },
+                            "✓ ",
+                            React.createElement('span', {
+                                className: "font-semibold text-slate-300"
+                            }, pares.length),
+                            " pares USDT perpétuos encontrados"
+                        )
+                    ),
+                    React.createElement('div', {
+                        className: "mt-8 text-center text-xs text-slate-500"
+                    },
+                        React.createElement('p', null,
+                            "Dados fornecidos pela ",
+                            React.createElement('span', {
+                                className: "text-slate-400 font-medium"
+                            }, "CoinGecko API")
+                        )
+                    )
+                )
+            );
+        }
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(React.createElement(AplicacaoTopGainers));
+    </script>
+</body>
+</html>
