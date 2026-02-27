@@ -1,4 +1,4 @@
-# Bybit Top Gainers - Script Corrigido
+# Bybit Top Gainers
 
 ## 📋 Resumo
 
