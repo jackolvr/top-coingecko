@@ -86,7 +86,7 @@
                             preco: parseFloat(ticker.price || ticker.last || 0),
                             percentual_24h: parseFloat(ticker.price_percentage_change_24h || 0)
                         }))
-                        .filter(par => par.preco >= 0.01)
+                        .filter(par => par.preco > 0.01)
                         .sort((a, b) => b.percentual_24h - a.percentual_24h)
                         .slice(0, 20);
 
