@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Top 20 pares perpétuos USDT da Bybit - Maiores valorizações em 24 horas">
+    <meta name="description" content="Top 20 pares perpétuos USDT da Bybit - Melhores oportunidades por Score Scalping">
     <meta name="theme-color" content="#0f172a">
-    <title>Top 20 Gainers - Bybit USDT Perpétuos</title>
+    <title>Top 20 por Score - Bybit USDT Perpétuos</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
@@ -546,8 +546,10 @@
         function useBybitMetrics(pares, pesos_config) {
             const [metricas_map, setMetricasMap] = useState({});
             const [bybit_disponivel, setBybitDisponivel] = useState(true);
+            const [bybit_carregando, setBybitCarregando] = useState(false);
             const [ultima_atualizacao_bybit, setUltimaAtualizacaoBybit] = useState(null);
             const pesos_ref = useRef(pesos_config);
+            const em_execucao_ref = useRef(false);
             useEffect(() => { pesos_ref.current = pesos_config; }, [pesos_config]);
 
             const calcular_metricas_par = useCallback(async (par) => {
@@ -569,24 +571,27 @@
                 }
             }, []);
 
-            const atualizar_metricas = useCallback(async () => {
-                if (!pares.length) return;
-                const resultados = await Promise.all(pares.map(calcular_metricas_par));
-                const novo_map = {};
-                resultados.forEach((r) => { if (r) novo_map[r.symbol] = r; });
-                setMetricasMap(novo_map);
-                setBybitDisponivel(Object.keys(novo_map).length > 0);
-                setUltimaAtualizacaoBybit(Date.now());
+            useEffect(() => {
+                if (!pares.length || em_execucao_ref.current) return;
+                const executar = async () => {
+                    em_execucao_ref.current = true;
+                    setBybitCarregando(true);
+                    try {
+                        const resultados = await Promise.all(pares.map(calcular_metricas_par));
+                        const novo_map = {};
+                        resultados.forEach((r) => { if (r) novo_map[r.symbol] = r; });
+                        setMetricasMap(novo_map);
+                        setBybitDisponivel(Object.keys(novo_map).length > 0);
+                        setUltimaAtualizacaoBybit(Date.now());
+                    } finally {
+                        em_execucao_ref.current = false;
+                        setBybitCarregando(false);
+                    }
+                };
+                executar();
             }, [pares, calcular_metricas_par]);
 
-            useEffect(() => {
-                if (!pares.length) return;
-                atualizar_metricas();
-                const intervalo = setInterval(atualizar_metricas, 5000);
-                return () => clearInterval(intervalo);
-            }, [pares, atualizar_metricas]);
-
-            return { metricas_map, bybit_disponivel, ultima_atualizacao_bybit };
+            return { metricas_map, bybit_disponivel, bybit_carregando, ultima_atualizacao_bybit };
         }
 
         function formatar_usd_compacto(valor) {
@@ -803,8 +808,7 @@
                             percentual_24h: parseFloat(ticker.price_percentage_change_24h || 0)
                         }))
                         .filter(par => par.preco > 0.01)
-                        .sort((a, b) => b.percentual_24h - a.percentual_24h)
-                        .slice(0, 20);
+                        .slice(0, 50);
 
                     setPares(pares_processados);
                     setUltimaAtualizacao(new Date().toLocaleTimeString('pt-BR'));
@@ -888,11 +892,11 @@
         function AplicacaoTopGainers() {
             const { pares, estado_carregamento, erro, ultima_atualizacao, buscar_pares } = useFetchTopGainers();
             const [pesos_config, setPesosConfig] = useState({ ...SCORE_PESOS });
-            const { metricas_map, bybit_disponivel, ultima_atualizacao_bybit } = useBybitMetrics(pares, pesos_config);
+            const { metricas_map, bybit_disponivel, bybit_carregando, ultima_atualizacao_bybit } = useBybitMetrics(pares, pesos_config);
             const pares_ordenados = useMemo(() => {
-                if (!Object.keys(metricas_map).length) return pares;
+                if (!Object.keys(metricas_map).length) return pares.slice(0, 20);
                 const com_score = pares.map(par => ({ ...par, score: metricas_map[par.simbolo] ? metricas_map[par.simbolo].score : 0 }));
-                return ordenar_por_score(com_score);
+                return ordenar_por_score(com_score).slice(0, 20);
             }, [pares, metricas_map]);
 
             useEffect(() => { limpar_historico_antigo(); }, []);
@@ -937,14 +941,14 @@
                             ),
                             React.createElement('h1', {
                                 className: "text-5xl font-bold text-white tracking-tight"
-                            }, "Top 20 Gainers")
+                            }, "Top 20 por Score")
                         ),
                         React.createElement('p', {
                             className: "text-slate-400 text-lg mb-2"
                         }, "Pares Perpétuos USDT da Bybit"),
                         React.createElement('p', {
                             className: "text-slate-500 text-sm"
-                        }, "Maiores Valorizações em 24 horas")
+                        }, "Melhores oportunidades por Score Scalping")
                     ),
                     React.createElement('div', {
                         className: "bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-xl shadow-2xl overflow-hidden"
@@ -968,11 +972,11 @@
                                 React.createElement(ConfigPesos, { pesos: pesos_config, setPesos: setPesosConfig }),
                                 React.createElement('button', {
                                     onClick: buscar_pares,
-                                    disabled: estado_carregamento,
+                                    disabled: estado_carregamento || bybit_carregando,
                                     className: "inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-medium text-sm"
                                 },
                                     React.createElement('svg', {
-                                        className: `w-4 h-4 ${estado_carregamento ? 'animate-spin' : ''}`,
+                                        className: `w-4 h-4 ${(estado_carregamento || bybit_carregando) ? 'animate-spin' : ''}`,
                                         width: "24",
                                         height: "24",
                                         viewBox: "0 0 24 24",
@@ -984,7 +988,7 @@
                                     }, React.createElement('polyline', { points: "23 4 23 10 17 10" }),
                                        React.createElement('polyline', { points: "1 20 1 14 7 14" }),
                                        React.createElement('path', { d: "M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36" })),
-                                    "Atualizar"
+                                    estado_carregamento ? "Buscando pares..." : bybit_carregando ? "Calculando scores..." : "Atualizar"
                                 )
                             )
                         ),
@@ -1066,7 +1070,7 @@
                             React.createElement('span', {
                                 className: "font-semibold text-slate-300"
                             }, pares.length),
-                            " pares USDT perpétuos encontrados"
+                            " pares analisados · Top 20 por score exibidos"
                         )
                     ),
                     React.createElement('div', {

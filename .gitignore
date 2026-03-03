@@ -1,3 +1,8 @@
 files/
 setup.sh
 DEPLOYMENT_GUIDE.md
+tasks/
+scripts/
+.devcontainer/
+.vscode/
+.claude/
