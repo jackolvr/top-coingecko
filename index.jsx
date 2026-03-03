@@ -245,6 +245,124 @@ function analisar_rejeicao_niveis(candlesticks) {
 }
 // ---- fim US-003 ----
 
+// ---- US-004: Order Book e Cost-to-Move ----
+const CACHE_TTL_ORDER_BOOK = 5000; // 5s
+const COST_TO_MOVE_MIN_USD = 50000; // $50K
+
+function _obter_cache_order_book(symbol) {
+  try {
+    const chave = `scalping_cache_${symbol}`;
+    const cached = localStorage.getItem(chave);
+    if (!cached) return null;
+    const dados = JSON.parse(cached);
+    if (dados.order_book && Date.now() - (dados.timestamp_order_book || 0) < CACHE_TTL_ORDER_BOOK) {
+      return dados.order_book;
+    }
+    return null;
+  } catch (e) { return null; }
+}
+
+function _salvar_cache_order_book(symbol, order_book) {
+  try {
+    const chave = `scalping_cache_${symbol}`;
+    const existente = JSON.parse(localStorage.getItem(chave) || '{}');
+    localStorage.setItem(chave, JSON.stringify({
+      ...existente,
+      order_book,
+      timestamp_order_book: Date.now()
+    }));
+  } catch (e) {
+    console.warn('[Cache] Falha ao salvar order book:', e);
+  }
+}
+
+async function buscar_order_book(symbol, limit = 20) {
+  const cache = _obter_cache_order_book(symbol);
+  if (cache) return cache;
+
+  try {
+    const url = `${BYBIT_BASE}/market/orderbook?symbol=${symbol}&limit=${limit}`;
+    const proxyUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
+    const resposta = await bybitRateLimiter.execute(async () => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch(proxyUrl, { signal: ctrl.signal });
+        clearTimeout(t);
+        return res;
+      } catch (e) { clearTimeout(t); throw e; }
+    });
+    if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
+    const dados = await resposta.json();
+    if (dados.retCode !== 0 || !dados.result) {
+      throw new Error(`Bybit: ${dados.retMsg || 'sem dados'}`);
+    }
+    // Bybit v5 order book: b = bids [[price, size],...] desc, a = asks [[price, size],...] asc
+    const bids = (dados.result.b || []).map(([price, size]) => ({
+      price: parseFloat(price),
+      size: parseFloat(size)
+    }));
+    const asks = (dados.result.a || []).map(([price, size]) => ({
+      price: parseFloat(price),
+      size: parseFloat(size)
+    }));
+    const order_book = { bids, asks, timestamp: Date.now() };
+    _salvar_cache_order_book(symbol, order_book);
+    return order_book;
+  } catch (err) {
+    console.warn(`[Bybit] order book ${symbol}:`, err.message);
+    // Fallback: cache stale
+    try {
+      const chave = `scalping_cache_${symbol}`;
+      const cached = localStorage.getItem(chave);
+      if (cached) {
+        const dados = JSON.parse(cached);
+        if (dados.order_book?.bids?.length) {
+          console.warn(`[Bybit] Cache stale order book para ${symbol}`);
+          return dados.order_book;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+}
+
+function calcular_cost_to_move(order_book) {
+  if (!order_book || !order_book.bids?.length || !order_book.asks?.length) {
+    return { cost_to_move_up_usd: 0, cost_to_move_down_usd: 0, spread_atual: 0, tem_liquidez: false };
+  }
+
+  const melhor_bid = order_book.bids[0]?.price || 0;
+  const melhor_ask = order_book.asks[0]?.price || 0;
+  const preco_medio = (melhor_bid + melhor_ask) / 2;
+  if (preco_medio === 0) {
+    return { cost_to_move_up_usd: 0, cost_to_move_down_usd: 0, spread_atual: 0, tem_liquidez: false };
+  }
+
+  const spread_atual = melhor_ask > 0 ? ((melhor_ask - melhor_bid) / melhor_ask) * 100 : 0;
+
+  // Cost to move UP 1%: accumulate ask volume until price > preco_medio * 1.01
+  const preco_alvo_up = preco_medio * 1.01;
+  let cost_to_move_up_usd = 0;
+  for (const nivel of order_book.asks) {
+    if (nivel.price > preco_alvo_up) break;
+    cost_to_move_up_usd += nivel.price * nivel.size;
+  }
+
+  // Cost to move DOWN 1%: accumulate bid volume until price < preco_medio * 0.99
+  const preco_alvo_down = preco_medio * 0.99;
+  let cost_to_move_down_usd = 0;
+  for (const nivel of order_book.bids) {
+    if (nivel.price < preco_alvo_down) break;
+    cost_to_move_down_usd += nivel.price * nivel.size;
+  }
+
+  const tem_liquidez = cost_to_move_up_usd >= COST_TO_MOVE_MIN_USD && cost_to_move_down_usd >= COST_TO_MOVE_MIN_USD;
+
+  return { cost_to_move_up_usd, cost_to_move_down_usd, spread_atual, tem_liquidez };
+}
+// ---- fim US-004 ----
+
 // Hook customizado para buscar dados
 function useFetchTopGainers() {
   const [estado_carregamento, setEstadoCarregamento] = useState(true);
