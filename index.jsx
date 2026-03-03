@@ -483,6 +483,134 @@ function ordenar_por_score(moedas_com_score) {
 }
 // ---- fim US-005 ----
 
+// ---- US-006: Métricas Bybit na Tabela ----
+function useBybitMetrics(pares) {
+  const [metricas_map, setMetricasMap] = useState({});
+  const [bybit_disponivel, setBybitDisponivel] = useState(true);
+  const [ultima_atualizacao_bybit, setUltimaAtualizacaoBybit] = useState(null);
+
+  const calcular_metricas_par = useCallback(async (par) => {
+    const symbol = par.simbolo;
+    try {
+      const [candlesticks, order_book] = await Promise.all([
+        buscar_candlesticks_bybit(symbol),
+        buscar_order_book(symbol)
+      ]);
+      const momentum = calcular_momentum(candlesticks);
+      const rejeicao = analisar_rejeicao_niveis(candlesticks);
+      const liquidez = calcular_cost_to_move(order_book);
+      const { score, breakdown } = calcular_score_combinado(symbol, { momentum, rejeicao, liquidez, candlesticks });
+      const { volume_ratio, volatilidade_pct } = _extrair_metricas_candlestick(candlesticks || []);
+      return { momentum, rejeicao, liquidez, score, breakdown, volume_ratio, volatilidade_pct, symbol, timestamp: Date.now() };
+    } catch (err) {
+      console.warn(`[US-006] Métricas ${symbol}:`, err.message);
+      return null;
+    }
+  }, []);
+
+  const atualizar_metricas = useCallback(async () => {
+    if (!pares.length) return;
+    const resultados = await Promise.all(pares.map(calcular_metricas_par));
+    const novo_map = {};
+    resultados.forEach((r) => { if (r) novo_map[r.symbol] = r; });
+    setMetricasMap(novo_map);
+    setBybitDisponivel(Object.keys(novo_map).length > 0);
+    setUltimaAtualizacaoBybit(Date.now());
+  }, [pares, calcular_metricas_par]);
+
+  useEffect(() => {
+    if (!pares.length) return;
+    atualizar_metricas();
+    const intervalo = setInterval(atualizar_metricas, 5000);
+    return () => clearInterval(intervalo);
+  }, [pares, atualizar_metricas]);
+
+  return { metricas_map, bybit_disponivel, ultima_atualizacao_bybit };
+}
+
+function formatar_usd_compacto(valor) {
+  if (!valor || valor <= 0) return '$0';
+  if (valor >= 1000000) return `$${(valor / 1000000).toFixed(1)}M`;
+  if (valor >= 1000) return `$${(valor / 1000).toFixed(0)}K`;
+  return `$${valor.toFixed(0)}`;
+}
+
+function CelulaMomentum({ momentum }) {
+  if (!momentum || momentum.status === 'sem_dados') {
+    return <span className="text-slate-500 text-xs">—</span>;
+  }
+  function _render_pct(pct, label) {
+    if (pct === null) return null;
+    const abs = Math.abs(pct);
+    const positivo = pct >= 0;
+    const em_formacao = abs > 2 && abs < 10;
+    const classe = em_formacao ? (positivo ? 'text-green-400' : 'text-red-400') : 'text-slate-500';
+    const seta = positivo ? '↑' : '↓';
+    return <div className={`text-xs ${classe}`}>{`${seta}${label}: ${pct.toFixed(1)}%`}</div>;
+  }
+  return (
+    <div className="flex flex-col gap-0.5">
+      {_render_pct(momentum.percentual_1h, '1h')}
+      {_render_pct(momentum.percentual_4h, '4h')}
+    </div>
+  );
+}
+
+function CelulaRejeicao({ rejeicao }) {
+  if (!rejeicao || rejeicao.tipo === 'nenhuma') {
+    return <span className="text-slate-500 text-xs">💤 —</span>;
+  }
+  const icone = rejeicao.tipo === 'rejeicao_topo' ? '🔻' : '🔺';
+  const desc = rejeicao.tipo === 'rejeicao_topo' ? 'Topo' : 'Fundo';
+  return (
+    <div className="text-xs">
+      <div>{`${icone} ${desc}`}</div>
+      <div className="text-slate-400">{`Força: ${rejeicao.forca}/10`}</div>
+    </div>
+  );
+}
+
+function CelulaSpread({ liquidez }) {
+  if (!liquidez) return <span className="text-slate-500 text-xs">—</span>;
+  const cor_spread = liquidez.spread_atual < 0.1 ? 'text-green-400' : (liquidez.spread_atual < 0.3 ? 'text-yellow-400' : 'text-red-400');
+  return (
+    <div className="text-xs flex flex-col gap-0.5">
+      <span className={cor_spread}>{`${liquidez.spread_atual.toFixed(3)}%`}</span>
+      <span className="text-emerald-400">{`↑${formatar_usd_compacto(liquidez.cost_to_move_up_usd)}`}</span>
+      <span className="text-orange-400">{`↓${formatar_usd_compacto(liquidez.cost_to_move_down_usd)}`}</span>
+    </div>
+  );
+}
+
+function CelulaScore({ score }) {
+  if (score === undefined || score === null) {
+    return <span className="text-slate-500 text-xs">—</span>;
+  }
+  const indicador = score > 70 ? '🟢' : (score >= 50 ? '🟡' : '🔴');
+  return (
+    <div className="flex items-center gap-1 justify-center">
+      <span>{indicador}</span>
+      <span className="font-bold text-white">{score}</span>
+    </div>
+  );
+}
+
+function CelulaStatusFiltros({ momentum, rejeicao, liquidez, volume_ratio, volatilidade_pct }) {
+  const filtros = [
+    { chave: 'M', ok: !!(momentum && momentum.status !== 'falso_sinal' && momentum.status !== 'sem_dados'), titulo: 'Momentum' },
+    { chave: 'R', ok: !!(rejeicao && rejeicao.tem_rejeicao), titulo: 'Rejeição' },
+    { chave: 'L', ok: !!(liquidez && liquidez.tem_liquidez), titulo: 'Liquidez' },
+    { chave: 'V', ok: !!(volume_ratio && volume_ratio > 1), titulo: 'Volume' },
+    { chave: 'Vl', ok: !!(volatilidade_pct && volatilidade_pct >= 1 && volatilidade_pct <= 5), titulo: 'Volatilidade' }
+  ];
+  return (
+    <div className="flex gap-0.5 items-center justify-center flex-wrap">
+      {filtros.map(f => <span key={f.chave} title={f.titulo} className="text-xs">{f.ok ? '✅' : '❌'}</span>)}
+    </div>
+  );
+}
+// ---- fim US-006 ----
+
 // Hook customizado para buscar dados
 function useFetchTopGainers() {
   const [estado_carregamento, setEstadoCarregamento] = useState(true);
@@ -598,12 +726,23 @@ function CelulaMudanca({ percentual }) {
 }
 
 // Componente Linha da Tabela
-const LinhaTabela = React.memo(({ par }) => (
+const LinhaTabela = React.memo(({ par, metricas }) => (
   <tr className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
-    <td className="px-6 py-4 text-left font-medium text-slate-100">{par.simbolo}</td>
-    <td className="px-6 py-4 text-right font-mono text-slate-300">{formatar_preco(par.preco)}</td>
-    <td className="px-6 py-4 text-right">
-      <CelulaMudanca percentual={par.percentual_24h} />
+    <td className="px-3 py-3 text-left font-medium text-slate-100 text-sm whitespace-nowrap">{par.simbolo}</td>
+    <td className="px-3 py-3 text-right font-mono text-slate-300 text-sm whitespace-nowrap">{formatar_preco(par.preco)}</td>
+    <td className="px-3 py-3 text-right"><CelulaMudanca percentual={par.percentual_24h} /></td>
+    <td className="px-3 py-3 text-center"><CelulaMomentum momentum={metricas && metricas.momentum} /></td>
+    <td className="px-3 py-3 text-center"><CelulaRejeicao rejeicao={metricas && metricas.rejeicao} /></td>
+    <td className="px-3 py-3 text-center"><CelulaSpread liquidez={metricas && metricas.liquidez} /></td>
+    <td className="px-3 py-3 text-center"><CelulaScore score={metricas && metricas.score} /></td>
+    <td className="px-3 py-3 text-center">
+      <CelulaStatusFiltros
+        momentum={metricas && metricas.momentum}
+        rejeicao={metricas && metricas.rejeicao}
+        liquidez={metricas && metricas.liquidez}
+        volume_ratio={metricas && metricas.volume_ratio}
+        volatilidade_pct={metricas && metricas.volatilidade_pct}
+      />
     </td>
   </tr>
 ));
@@ -613,6 +752,12 @@ LinhaTabela.displayName = 'LinhaTabela';
 // Componente Principal
 export default function AplicacaoTopGainers() {
   const { pares, estado_carregamento, erro, ultima_atualizacao, buscar_pares } = useFetchTopGainers();
+  const { metricas_map, bybit_disponivel, ultima_atualizacao_bybit } = useBybitMetrics(pares);
+  const pares_ordenados = useMemo(() => {
+    if (!Object.keys(metricas_map).length) return pares;
+    const com_score = pares.map(par => ({ ...par, score: metricas_map[par.simbolo] ? metricas_map[par.simbolo].score : 0 }));
+    return ordenar_por_score(com_score);
+  }, [pares, metricas_map]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
@@ -624,7 +769,7 @@ export default function AplicacaoTopGainers() {
         }}
       />
 
-      <div className="relative z-10 max-w-6xl mx-auto px-4 py-12">
+      <div className="relative z-10 max-w-7xl mx-auto px-4 py-12">
         {/* Cabeçalho */}
         <div className="mb-12 text-center">
           <div className="flex items-center justify-center gap-3 mb-4">
@@ -644,10 +789,16 @@ export default function AplicacaoTopGainers() {
         <div className="bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-xl shadow-2xl overflow-hidden">
           {/* Barra de Ação */}
           <div className="flex items-center justify-between px-8 py-5 bg-slate-800/40 border-b border-slate-800">
-            <div className="text-sm text-slate-400">
-              {ultima_atualizacao && (
-                <span>Atualizado às <span className="text-cyan-400 font-semibold">{ultima_atualizacao}</span></span>
-              )}
+            <div className="flex flex-col gap-1">
+              <div className="text-sm text-slate-400">
+                {ultima_atualizacao && (
+                  <span>🔵 CoinGecko: <span className="text-cyan-400 font-semibold">{ultima_atualizacao}</span></span>
+                )}
+              </div>
+              {bybit_disponivel
+                ? ultima_atualizacao_bybit && <div className="text-xs text-slate-500">🟡 Bybit: {new Date(ultima_atualizacao_bybit).toLocaleTimeString('pt-BR')}</div>
+                : <div className="text-xs text-slate-400">⚫ Usando dados CoinGecko apenas</div>
+              }
             </div>
             <button
               onClick={buscar_pares}
@@ -686,14 +837,19 @@ export default function AplicacaoTopGainers() {
               <table className="w-full">
                 <thead>
                   <tr className="bg-slate-800/60 border-b border-slate-700">
-                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-300 uppercase tracking-wider">Par</th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider">Preço (USD)</th>
-                    <th className="px-6 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider">Mudança 24h</th>
+                    <th className="px-3 py-4 text-left text-xs font-semibold text-slate-300 uppercase tracking-wider">Par</th>
+                    <th className="px-3 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider">Preço</th>
+                    <th className="px-3 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider">24h %</th>
+                    <th className="px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider">Momentum 1h/4h</th>
+                    <th className="px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider">Rejeição</th>
+                    <th className="px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider">Spread / Liquidez</th>
+                    <th className="px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider">Score Scalping</th>
+                    <th className="px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider">Status Filtros</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {pares.map((par, indice) => (
-                    <LinhaTabela key={par.simbolo} par={par} />
+                  {pares_ordenados.map((par) => (
+                    <LinhaTabela key={par.simbolo} par={par} metricas={metricas_map[par.simbolo]} />
                   ))}
                 </tbody>
               </table>
