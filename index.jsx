@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { TrendingUp, AlertCircle, RefreshCw } from 'lucide-react';
 
 // Configuração da API
@@ -444,8 +444,19 @@ function _salvar_score_historico(moeda, score) {
   }
 }
 
-function calcular_score_combinado(moeda, metricas) {
+function calcular_score_combinado(moeda, metricas, pesos_custom) {
   const { momentum, rejeicao, liquidez, candlesticks } = metricas || {};
+
+  let pesos = SCORE_PESOS;
+  if (pesos_custom) {
+    const total = Object.values(pesos_custom).reduce((s, v) => s + v, 0);
+    if (total > 0) {
+      pesos = {};
+      for (const [k, v] of Object.entries(pesos_custom)) {
+        pesos[k] = v / total;
+      }
+    }
+  }
 
   const n_momentum = _normalizar_momentum(momentum);
   const n_rejeicao = _normalizar_rejeicao(rejeicao);
@@ -455,20 +466,20 @@ function calcular_score_combinado(moeda, metricas) {
   const n_volatilidade = _normalizar_volatilidade(volatilidade_pct);
 
   const score_bruto =
-    n_momentum * SCORE_PESOS.momentum +
-    n_rejeicao * SCORE_PESOS.rejeicao +
-    n_liquidez * SCORE_PESOS.liquidez +
-    n_volume * SCORE_PESOS.volume +
-    n_volatilidade * SCORE_PESOS.volatilidade;
+    n_momentum * pesos.momentum +
+    n_rejeicao * pesos.rejeicao +
+    n_liquidez * pesos.liquidez +
+    n_volume * pesos.volume +
+    n_volatilidade * pesos.volatilidade;
 
   const score = Math.min(100, Math.max(0, Math.round(score_bruto)));
 
   const breakdown = {
-    momentum: Math.round(n_momentum * SCORE_PESOS.momentum * 10) / 10,
-    rejeicao: Math.round(n_rejeicao * SCORE_PESOS.rejeicao * 10) / 10,
-    liquidez: Math.round(n_liquidez * SCORE_PESOS.liquidez * 10) / 10,
-    volume: Math.round(n_volume * SCORE_PESOS.volume * 10) / 10,
-    volatilidade: Math.round(n_volatilidade * SCORE_PESOS.volatilidade * 10) / 10
+    momentum: Math.round(n_momentum * pesos.momentum * 10) / 10,
+    rejeicao: Math.round(n_rejeicao * pesos.rejeicao * 10) / 10,
+    liquidez: Math.round(n_liquidez * pesos.liquidez * 10) / 10,
+    volume: Math.round(n_volume * pesos.volume * 10) / 10,
+    volatilidade: Math.round(n_volatilidade * pesos.volatilidade * 10) / 10
   };
 
   _salvar_score_historico(moeda, score);
@@ -484,10 +495,12 @@ function ordenar_por_score(moedas_com_score) {
 // ---- fim US-005 ----
 
 // ---- US-006: Métricas Bybit na Tabela ----
-function useBybitMetrics(pares) {
+function useBybitMetrics(pares, pesos_config) {
   const [metricas_map, setMetricasMap] = useState({});
   const [bybit_disponivel, setBybitDisponivel] = useState(true);
   const [ultima_atualizacao_bybit, setUltimaAtualizacaoBybit] = useState(null);
+  const pesos_ref = useRef(pesos_config);
+  useEffect(() => { pesos_ref.current = pesos_config; }, [pesos_config]);
 
   const calcular_metricas_par = useCallback(async (par) => {
     const symbol = par.simbolo;
@@ -499,7 +512,7 @@ function useBybitMetrics(pares) {
       const momentum = calcular_momentum(candlesticks);
       const rejeicao = analisar_rejeicao_niveis(candlesticks);
       const liquidez = calcular_cost_to_move(order_book);
-      const { score, breakdown } = calcular_score_combinado(symbol, { momentum, rejeicao, liquidez, candlesticks });
+      const { score, breakdown } = calcular_score_combinado(symbol, { momentum, rejeicao, liquidez, candlesticks }, pesos_ref.current);
       const { volume_ratio, volatilidade_pct } = _extrair_metricas_candlestick(candlesticks || []);
       return { momentum, rejeicao, liquidez, score, breakdown, volume_ratio, volatilidade_pct, symbol, timestamp: Date.now() };
     } catch (err) {
@@ -610,6 +623,106 @@ function CelulaStatusFiltros({ momentum, rejeicao, liquidez, volume_ratio, volat
   );
 }
 // ---- fim US-006 ----
+
+// ---- US-007: Dashboard de Status e Indicadores de Frescor ----
+function limpar_historico_antigo() {
+  try {
+    const UM_DIA = 86400000;
+    const historico = JSON.parse(localStorage.getItem(SCORE_HISTORY_KEY) || '[]');
+    const agora = Date.now();
+    const filtrado = historico.filter(e => (agora - e.timestamp) < UM_DIA);
+    if (filtrado.length !== historico.length) {
+      localStorage.setItem(SCORE_HISTORY_KEY, JSON.stringify(filtrado));
+      console.info(`[Cache] Removidas ${historico.length - filtrado.length} entradas de histórico > 1 dia`);
+    }
+  } catch (e) { console.warn('[Cache] Falha ao limpar histórico:', e); }
+}
+
+function DashboardStatus({ ultima_atualizacao_bybit, bybit_disponivel }) {
+  const [segundos_atras, setSegundosAtras] = useState(0);
+  useEffect(() => {
+    const intervalo = setInterval(() => {
+      if (ultima_atualizacao_bybit) {
+        setSegundosAtras(Math.round((Date.now() - ultima_atualizacao_bybit) / 1000));
+      }
+    }, 1000);
+    return () => clearInterval(intervalo);
+  }, [ultima_atualizacao_bybit]);
+
+  const bybit_ts = ultima_atualizacao_bybit
+    ? new Date(ultima_atualizacao_bybit).toLocaleTimeString('pt-BR')
+    : null;
+
+  return (
+    <div className="px-6 py-2 bg-slate-800/20 border-b border-slate-800 flex flex-wrap gap-x-4 gap-y-1 items-center text-xs">
+      <span className="text-slate-400">
+        <span className="text-blue-400 font-medium">🔵 CoinGecko:</span> Par · Preço · 24h%
+      </span>
+      {bybit_disponivel
+        ? <span className="text-slate-400">
+            <span className="text-yellow-400 font-medium">🟡 Bybit:</span> Momentum · Rejeição · Spread · Score · Filtros
+          </span>
+        : <span className="text-slate-500">⚫ Usando dados CoinGecko apenas</span>
+      }
+      {bybit_ts && bybit_disponivel && (
+        <span className="text-slate-500 ml-auto flex items-center gap-1">
+          {`⏱️ Última atualização Bybit: ${bybit_ts} (${segundos_atras}s atrás)`}
+          {segundos_atras > 5 && <span className="text-yellow-400">⚠️</span>}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ConfigPesos({ pesos, setPesos }) {
+  const [aberto, setAberto] = useState(false);
+  const campos = [
+    { chave: 'momentum', label: 'Momentum', cor: 'text-blue-400' },
+    { chave: 'rejeicao', label: 'Rejeição', cor: 'text-purple-400' },
+    { chave: 'liquidez', label: 'Liquidez', cor: 'text-cyan-400' },
+    { chave: 'volume', label: 'Volume', cor: 'text-green-400' },
+    { chave: 'volatilidade', label: 'Volatilidade', cor: 'text-orange-400' }
+  ];
+  const total_pct = Math.round(Object.values(pesos).reduce((s, v) => s + v, 0) * 100);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setAberto(!aberto)}
+        className={`inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg transition-all font-medium ${aberto ? 'bg-slate-600 text-white' : 'bg-slate-700/50 hover:bg-slate-700 text-slate-300'}`}
+      >
+        ⚙️ Pesos
+      </button>
+      {aberto && (
+        <div className="absolute right-0 top-10 z-20 w-72 bg-slate-800 border border-slate-700 rounded-xl shadow-xl p-4">
+          <h3 className="text-sm font-semibold text-slate-200 mb-3">Pesos do Score Combinado</h3>
+          {campos.map(campo => (
+            <div key={campo.chave} className="flex items-center gap-3 mb-2">
+              <span className={`text-xs w-24 ${campo.cor}`}>{campo.label}</span>
+              <input
+                type="range" min={0} max={50}
+                value={Math.round(pesos[campo.chave] * 100)}
+                onChange={e => setPesos({ ...pesos, [campo.chave]: parseInt(e.target.value) / 100 })}
+                className="flex-1 accent-cyan-500"
+              />
+              <span className="text-xs text-slate-400 w-10 text-right">{`${Math.round(pesos[campo.chave] * 100)}%`}</span>
+            </div>
+          ))}
+          <div className={`text-xs mt-2 ${Math.abs(total_pct - 100) > 1 ? 'text-yellow-400' : 'text-slate-500'}`}>
+            {`Total: ${total_pct}% (será normalizado ao calcular)`}
+          </div>
+          <button
+            onClick={() => setPesos({ ...SCORE_PESOS })}
+            className="mt-3 text-xs text-slate-500 hover:text-slate-300 underline"
+          >
+            Restaurar padrões
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+// ---- fim US-007 ----
 
 // Hook customizado para buscar dados
 function useFetchTopGainers() {
@@ -726,38 +839,46 @@ function CelulaMudanca({ percentual }) {
 }
 
 // Componente Linha da Tabela
-const LinhaTabela = React.memo(({ par, metricas }) => (
-  <tr className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
-    <td className="px-3 py-3 text-left font-medium text-slate-100 text-sm whitespace-nowrap">{par.simbolo}</td>
-    <td className="px-3 py-3 text-right font-mono text-slate-300 text-sm whitespace-nowrap">{formatar_preco(par.preco)}</td>
-    <td className="px-3 py-3 text-right"><CelulaMudanca percentual={par.percentual_24h} /></td>
-    <td className="px-3 py-3 text-center"><CelulaMomentum momentum={metricas && metricas.momentum} /></td>
-    <td className="px-3 py-3 text-center"><CelulaRejeicao rejeicao={metricas && metricas.rejeicao} /></td>
-    <td className="px-3 py-3 text-center"><CelulaSpread liquidez={metricas && metricas.liquidez} /></td>
-    <td className="px-3 py-3 text-center"><CelulaScore score={metricas && metricas.score} /></td>
-    <td className="px-3 py-3 text-center">
-      <CelulaStatusFiltros
-        momentum={metricas && metricas.momentum}
-        rejeicao={metricas && metricas.rejeicao}
-        liquidez={metricas && metricas.liquidez}
-        volume_ratio={metricas && metricas.volume_ratio}
-        volatilidade_pct={metricas && metricas.volatilidade_pct}
-      />
-    </td>
-  </tr>
-));
+function LinhaTabela({ par, metricas }) {
+  const is_stale = metricas && metricas.timestamp && (Date.now() - metricas.timestamp) > 5000;
+  const bybit_cls = `px-3 py-3 text-center${is_stale ? ' opacity-60' : ''}`;
+  const bybit_title = is_stale ? '⚠️ Dados Bybit desatualizados (>5s)' : undefined;
+  return (
+    <tr className="border-b border-slate-700 hover:bg-slate-800/50 transition-colors">
+      <td className="px-3 py-3 text-left font-medium text-slate-100 text-sm whitespace-nowrap">{par.simbolo}</td>
+      <td className="px-3 py-3 text-right font-mono text-slate-300 text-sm whitespace-nowrap">{formatar_preco(par.preco)}</td>
+      <td className="px-3 py-3 text-right"><CelulaMudanca percentual={par.percentual_24h} /></td>
+      <td className={bybit_cls} title={bybit_title}><CelulaMomentum momentum={metricas && metricas.momentum} /></td>
+      <td className={bybit_cls} title={bybit_title}><CelulaRejeicao rejeicao={metricas && metricas.rejeicao} /></td>
+      <td className={bybit_cls} title={bybit_title}><CelulaSpread liquidez={metricas && metricas.liquidez} /></td>
+      <td className={bybit_cls} title={bybit_title}><CelulaScore score={metricas && metricas.score} /></td>
+      <td className={bybit_cls} title={bybit_title}>
+        <CelulaStatusFiltros
+          momentum={metricas && metricas.momentum}
+          rejeicao={metricas && metricas.rejeicao}
+          liquidez={metricas && metricas.liquidez}
+          volume_ratio={metricas && metricas.volume_ratio}
+          volatilidade_pct={metricas && metricas.volatilidade_pct}
+        />
+      </td>
+    </tr>
+  );
+}
 
 LinhaTabela.displayName = 'LinhaTabela';
 
 // Componente Principal
 export default function AplicacaoTopGainers() {
   const { pares, estado_carregamento, erro, ultima_atualizacao, buscar_pares } = useFetchTopGainers();
-  const { metricas_map, bybit_disponivel, ultima_atualizacao_bybit } = useBybitMetrics(pares);
+  const [pesos_config, setPesosConfig] = useState({ ...SCORE_PESOS });
+  const { metricas_map, bybit_disponivel, ultima_atualizacao_bybit } = useBybitMetrics(pares, pesos_config);
   const pares_ordenados = useMemo(() => {
     if (!Object.keys(metricas_map).length) return pares;
     const com_score = pares.map(par => ({ ...par, score: metricas_map[par.simbolo] ? metricas_map[par.simbolo].score : 0 }));
     return ordenar_por_score(com_score);
   }, [pares, metricas_map]);
+
+  useEffect(() => { limpar_historico_antigo(); }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
@@ -800,15 +921,20 @@ export default function AplicacaoTopGainers() {
                 : <div className="text-xs text-slate-400">⚫ Usando dados CoinGecko apenas</div>
               }
             </div>
-            <button
-              onClick={buscar_pares}
-              disabled={estado_carregamento}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-medium text-sm"
-            >
-              <RefreshCw className={`w-4 h-4 ${estado_carregamento ? 'animate-spin' : ''}`} />
-              Atualizar
-            </button>
+            <div className="flex items-center gap-2">
+              <ConfigPesos pesos={pesos_config} setPesos={setPesosConfig} />
+              <button
+                onClick={buscar_pares}
+                disabled={estado_carregamento}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-medium text-sm"
+              >
+                <RefreshCw className={`w-4 h-4 ${estado_carregamento ? 'animate-spin' : ''}`} />
+                Atualizar
+              </button>
+            </div>
           </div>
+
+          <DashboardStatus ultima_atualizacao_bybit={ultima_atualizacao_bybit} bybit_disponivel={bybit_disponivel} />
 
           {/* Conteúdo */}
           {erro ? (
