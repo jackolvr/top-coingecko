@@ -112,7 +112,7 @@
             const resultados = [];
             for (const intervalo of intervalos) {
                 try {
-                    const url = `${BYBIT_BASE}/market/kline?symbol=${symbol}&interval=${intervalo}&limit=2`;
+                    const url = `${BYBIT_BASE}/market/kline?symbol=${symbol}&interval=${intervalo}&limit=5`;
                     const proxyUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
                     const resposta = await bybitRateLimiter.execute(async () => {
                         const ctrl = new AbortController();
@@ -212,6 +212,71 @@
             return { percentual_1h, percentual_4h, status };
         }
         // ---- fim US-002 ----
+
+        // ---- US-003: Rejeição de Níveis ----
+        function analisar_rejeicao_niveis(candlesticks) {
+            if (!candlesticks || candlesticks.length === 0) {
+                return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
+            }
+
+            // Agrupar por intervalo
+            const por_intervalo = {};
+            candlesticks.forEach(c => {
+                if (!por_intervalo[c.interval]) por_intervalo[c.interval] = [];
+                por_intervalo[c.interval].push(c);
+            });
+
+            function _calcular_sma_volume(candles) {
+                if (!candles || candles.length === 0) return 0;
+                return candles.reduce((sum, c) => sum + c.volume, 0) / candles.length;
+            }
+
+            function _calcular_forca(wick_size, candle_body) {
+                if (candle_body === 0) return wick_size > 0 ? 10 : 0;
+                const ratio = wick_size / candle_body;
+                return Math.round(Math.min(10, Math.max(1, ratio * 2)));
+            }
+
+            function _analisar_intervalo(candles) {
+                if (!candles || candles.length === 0) {
+                    return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
+                }
+
+                const vela = candles[0]; // mais recente (Bybit retorna desc)
+                const sma_volume = _calcular_sma_volume(candles);
+                if (vela.volume <= sma_volume) {
+                    return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
+                }
+
+                const wick_topo = vela.high - vela.close;
+                const wick_fundo = vela.close - vela.low;
+                const candle_body = Math.abs(vela.close - vela.open);
+
+                // Lógica: rejeição topo se wick_topo > (close - low) * 0.5
+                const tem_rejeicao_topo = wick_topo > (vela.close - vela.low) * 0.5;
+                // Lógica: rejeição fundo se wick_fundo > (high - close) * 0.5
+                const tem_rejeicao_fundo = wick_fundo > (vela.high - vela.close) * 0.5;
+
+                if (tem_rejeicao_topo && wick_topo >= wick_fundo) {
+                    return { tem_rejeicao: true, tipo: 'rejeicao_topo', forca: _calcular_forca(wick_topo, candle_body) };
+                } else if (tem_rejeicao_fundo) {
+                    return { tem_rejeicao: true, tipo: 'rejeicao_fundo', forca: _calcular_forca(wick_fundo, candle_body) };
+                } else if (tem_rejeicao_topo) {
+                    return { tem_rejeicao: true, tipo: 'rejeicao_topo', forca: _calcular_forca(wick_topo, candle_body) };
+                }
+                return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
+            }
+
+            const resultados = Object.values(por_intervalo).map(_analisar_intervalo);
+            const com_rejeicao = resultados.filter(r => r.tem_rejeicao);
+            if (com_rejeicao.length === 0) {
+                return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
+            }
+
+            // Retorna a rejeição mais forte entre os intervalos
+            return com_rejeicao.reduce((best, curr) => curr.forca > best.forca ? curr : best);
+        }
+        // ---- fim US-003 ----
 
         function useFetchTopGainers() {
             const [estado_carregamento, setEstadoCarregamento] = useState(true);
