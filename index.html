@@ -39,9 +39,29 @@
         const TIMEOUT_PADRAO = 15000;
 
         // ---- US-001: Bybit Candlesticks ----
-        const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+        const CORS_PROXIES = [
+            url => url, // direto (Bybit suporta CORS para endpoints públicos)
+            url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+            url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+        ];
         const BYBIT_BASE = 'https://api.bybit.com/v5';
         const CACHE_TTL_CANDLESTICKS = 60000; // 60s
+
+        async function fetchBybitJSON(url, signal) {
+            for (const makeUrl of CORS_PROXIES) {
+                if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+                try {
+                    const res = await fetch(makeUrl(url), { signal });
+                    if (!res.ok) continue;
+                    const text = await res.text();
+                    if (text.trimStart().startsWith('<')) continue;
+                    return JSON.parse(text);
+                } catch (e) {
+                    if (e.name === 'AbortError') throw e;
+                }
+            }
+            throw new Error('Todos os proxies falharam');
+        }
 
         class RateLimiter {
             constructor(maxCallsPerSecond) {
@@ -112,19 +132,16 @@
             const resultados = [];
             for (const intervalo of intervalos) {
                 try {
-                    const url = `${BYBIT_BASE}/market/kline?symbol=${symbol}&interval=${intervalo}&limit=5`;
-                    const proxyUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
-                    const resposta = await bybitRateLimiter.execute(async () => {
+                    const url = `${BYBIT_BASE}/market/kline?category=linear&symbol=${symbol}&interval=${intervalo}&limit=5`;
+                    const dados = await bybitRateLimiter.execute(async () => {
                         const ctrl = new AbortController();
-                        const t = setTimeout(() => ctrl.abort(), 8000);
+                        const t = setTimeout(() => ctrl.abort('timeout'), 8000);
                         try {
-                            const res = await fetch(proxyUrl, { signal: ctrl.signal });
+                            const json = await fetchBybitJSON(url, ctrl.signal);
                             clearTimeout(t);
-                            return res;
+                            return json;
                         } catch (e) { clearTimeout(t); throw e; }
                     });
-                    if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
-                    const dados = await resposta.json();
                     if (dados.retCode !== 0 || !dados.result?.list?.length) {
                         throw new Error(`Bybit: ${dados.retMsg || 'sem dados'}`);
                     }
@@ -314,19 +331,16 @@
             if (cache) return cache;
 
             try {
-                const url = `${BYBIT_BASE}/market/orderbook?symbol=${symbol}&limit=${limit}`;
-                const proxyUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
-                const resposta = await bybitRateLimiter.execute(async () => {
+                const url = `${BYBIT_BASE}/market/orderbook?category=linear&symbol=${symbol}&limit=${limit}`;
+                const dados = await bybitRateLimiter.execute(async () => {
                     const ctrl = new AbortController();
-                    const t = setTimeout(() => ctrl.abort(), 8000);
+                    const t = setTimeout(() => ctrl.abort('timeout'), 8000);
                     try {
-                        const res = await fetch(proxyUrl, { signal: ctrl.signal });
+                        const json = await fetchBybitJSON(url, ctrl.signal);
                         clearTimeout(t);
-                        return res;
+                        return json;
                     } catch (e) { clearTimeout(t); throw e; }
                 });
-                if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
-                const dados = await resposta.json();
                 if (dados.retCode !== 0 || !dados.result) {
                     throw new Error(`Bybit: ${dados.retMsg || 'sem dados'}`);
                 }
