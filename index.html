@@ -167,6 +167,52 @@
         }
         // ---- fim US-001 ----
 
+        // ---- US-002: Momentum Intraday ----
+        function calcular_momentum(candlesticks) {
+            if (!candlesticks || candlesticks.length === 0) {
+                return { percentual_1h: null, percentual_4h: null, status: 'sem_dados' };
+            }
+
+            // Agrupar por intervalo; Bybit retorna mais recente primeiro (index 0 = atual, index 1 = primeira vela)
+            const por_intervalo = {};
+            candlesticks.forEach(c => {
+                if (!por_intervalo[c.interval]) por_intervalo[c.interval] = [];
+                por_intervalo[c.interval].push(c);
+            });
+
+            function _calcular_percentual(candles) {
+                if (!candles || candles.length < 2) return null;
+                const close_atual = candles[0].close;
+                const open_primeira_vela = candles[1].open;
+                if (open_primeira_vela === 0) return null;
+                return ((close_atual - open_primeira_vela) / open_primeira_vela) * 100;
+            }
+
+            const percentual_1h = _calcular_percentual(por_intervalo['60']);
+            const percentual_4h = _calcular_percentual(por_intervalo['240']);
+
+            function _eh_em_formacao(pct) {
+                if (pct === null) return false;
+                const abs = Math.abs(pct);
+                return abs > 2 && abs < 10;
+            }
+
+            const formacao_1h = _eh_em_formacao(percentual_1h);
+            const formacao_4h = _eh_em_formacao(percentual_4h);
+
+            let status;
+            if (formacao_1h && formacao_4h) {
+                status = 'em_formacao_confirmada';
+            } else if (formacao_1h || formacao_4h) {
+                status = 'em_formacao';
+            } else {
+                status = 'falso_sinal';
+            }
+
+            return { percentual_1h, percentual_4h, status };
+        }
+        // ---- fim US-002 ----
+
         function useFetchTopGainers() {
             const [estado_carregamento, setEstadoCarregamento] = useState(true);
             const [erro, setErro] = useState(null);
