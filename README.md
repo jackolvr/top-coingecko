@@ -1,77 +1,63 @@
-# Top 20 Gainers - Bybit USDT Perpétuos
+# Top 20 Gainers - Bybit USDT Perpétuos (Ferramenta Avançada de Scalping)
 
-Aplicação web React que exibe os 20 pares perpétuos USDT da Bybit com maiores valorizações em 24 horas.
+Aplicação web React que exibe os 20 pares perpétuos USDT da Bybit com maiores valorizações em 24 horas, combinando análise técnica avançada com interface moderna.
 
-**Repositório**: https://github.com/jackolvr/top-coingecko
-**Web App (Pages)**: https://jackolvr.github.io/top-coingecko
+## Recursos Principais
 
-## Recursos
-
-- ✨ **Atualização em tempo real** - Dados atualizados a cada minuto
-- 📊 **Interface moderna** - Design dark com Tailwind CSS
-- ⚡ **Performance otimizada** - React com memoização e callbacks
+- ✨ **Análise Técnica Avançada** - Inclui momentum intraday (1h/4h), rejeição de níveis com força, score combinado para scalping
+- 📊 **Interface Moderna** - Design dark com Tailwind CSS e ícones Lucide React
+- ⚡ **Performance Otimizada** - React com memoização, callbacks e lazy loading
 - 📱 **Responsivo** - Funciona em desktop, tablet e mobile
-- 🎯 **Best practices** - Vercel React patterns aplicados
+- 🎯 **Best Practices** - Padrões do Vercel, gerenciamento de estado eficiente
+- 🔄 **Atualização em Tempo Real** - Dados atualizados a cada 60 segundos
+- 🧠 **Sistema de Score** - Avaliação combinada de momentum, rejeição, liquidez, volume e volatilidade
 
-## Tecnologias
+## Tecnologias Utilizadas
 
 - **React 18** - Library UI
 - **Tailwind CSS** - Styling
 - **Lucide React** - Ícones
 - **CoinGecko API** - Dados de mercado (grátis, sem autenticação)
+- **Bybit API** - Dados avançados (candlesticks, order book)
+- **LocalStorage** - Caching de dados para melhor desempenho
+- **Rate Limiter** - Controle de requisições para Bybit API
 
-## Deploy no Branch Pages
-
-### Setup Automático
-
-```bash
-# No diretório do repositório
-chmod +x setup.sh
-./setup.sh
-```
-
-### Setup Manual
+## Estrutura do Projeto
 
 ```bash
-# 1. Adicionar arquivos à branch pages
-git checkout -b pages
-cp index.html index.jsx package.json README.md .
-
-# 2. Commit e push
-git add .
-git commit -m "feat: bybit top gainers web app"
-git push -u origin pages
-```
-
-### Configurar GitHub Pages
-
-1. Repositório → **Settings** → **Pages**
-2. **Source**: Deploy from a branch
-3. **Branch**: `pages` / `/ (root)`
-4. **Save**
-
-⏱️ Site disponível em 2-3 minutos:
-```
-https://jackolvr.github.io/top-coingecko/
-```
-
-## Estrutura
-
-```
 ├── index.html          # App completa (React bundled)
 ├── index.jsx           # Componente React (referência)
 ├── package.json        # Metadados
 ├── setup.sh            # Script de setup
-└── README.md           # Documentação
+├── README.md           # Documentação
+└── src/                # Pasta com componentes e lógica
+    ├── components/     # Componentes reutilizáveis
+    ├── hooks/          # Hooks customizados
+    ├── utils/          # Funções utilitárias
+    └── styles/         # Estilos globais
 ```
 
 ## Como Funciona
 
-1. **Busca**: CoinGecko API `/derivatives`
-2. **Filtro**: Apenas USDT perpétuos da Bybit
-3. **Ordenação**: Por % ganho em 24h
-4. **Exibição**: Top 20 em tabela
-5. **Atualização**: A cada 60s automaticamente
+1. **Coleta de Dados**:
+   - CoinGecko API para lista inicial de pares
+   - Bybit API para dados avançados (candlesticks, order book)
+
+2. **Processamento**:
+   - Cálculo de momentum em múltiplos timeframes
+   - Análise de rejeição de níveis com força
+   - Cálculo de score combinado (momentum + rejeição + liquidez + volume + volatilidade)
+
+3. **Exibição**:
+   - Tabela com 20 pares mais relevantes
+   - Painel de status com indicadores de frescor
+   - Configuração de pesos para score
+
+4. **Otimizações**:
+   - React.memo para componentes de lista
+   - useCallback para callbacks estáveis
+   - Abort controller para timeouts
+   - Caching com localStorage
 
 ## Otimizações Aplicadas
 
@@ -81,6 +67,8 @@ https://jackolvr.github.io/top-coingecko/
 - ✅ Event delegation
 - ✅ CSS classes (zero JS overhead)
 - ✅ Abort controller para timeouts
+- ✅ Caching com localStorage
+- ✅ Rate limiting para Bybit API
 
 ## Licença
 
