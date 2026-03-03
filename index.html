@@ -38,6 +38,135 @@
         const API_COINGECKO = 'https://api.coingecko.com/api/v3/derivatives';
         const TIMEOUT_PADRAO = 15000;
 
+        // ---- US-001: Bybit Candlesticks ----
+        const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+        const BYBIT_BASE = 'https://api.bybit.com/v5';
+        const CACHE_TTL_CANDLESTICKS = 60000; // 60s
+
+        class RateLimiter {
+            constructor(maxCallsPerSecond) {
+                this.maxCallsPerSecond = maxCallsPerSecond;
+                this.queue = [];
+                this.callTimestamps = [];
+                this.processing = false;
+            }
+
+            execute(fn) {
+                return new Promise((resolve, reject) => {
+                    this.queue.push({ fn, resolve, reject });
+                    if (!this.processing) this._processQueue();
+                });
+            }
+
+            async _processQueue() {
+                this.processing = true;
+                while (this.queue.length > 0) {
+                    const now = Date.now();
+                    this.callTimestamps = this.callTimestamps.filter(ts => now - ts < 1000);
+                    if (this.callTimestamps.length >= this.maxCallsPerSecond) {
+                        const waitTime = 1000 - (now - this.callTimestamps[0]) + 1;
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    const { fn, resolve, reject } = this.queue.shift();
+                    this.callTimestamps.push(Date.now());
+                    try { resolve(await fn()); } catch (e) { reject(e); }
+                }
+                this.processing = false;
+            }
+        }
+
+        const bybitRateLimiter = new RateLimiter(20);
+
+        function _obter_cache_candlesticks(symbol) {
+            try {
+                const chave = `scalping_cache_${symbol}`;
+                const cached = localStorage.getItem(chave);
+                if (!cached) return null;
+                const dados = JSON.parse(cached);
+                if (Date.now() - dados.timestamp_cache < CACHE_TTL_CANDLESTICKS) {
+                    return dados.candlesticks || null;
+                }
+                return null;
+            } catch (e) { return null; }
+        }
+
+        function _salvar_cache_candlesticks(symbol, candlesticks) {
+            try {
+                const chave = `scalping_cache_${symbol}`;
+                const existente = JSON.parse(localStorage.getItem(chave) || '{}');
+                localStorage.setItem(chave, JSON.stringify({
+                    ...existente,
+                    candlesticks,
+                    timestamp_cache: Date.now()
+                }));
+            } catch (e) {
+                console.warn('[Cache] Falha ao salvar candlesticks:', e);
+            }
+        }
+
+        async function buscar_candlesticks_bybit(symbol, intervalos = ['60', '240']) {
+            const cache = _obter_cache_candlesticks(symbol);
+            if (cache) return cache;
+
+            const resultados = [];
+            for (const intervalo of intervalos) {
+                try {
+                    const url = `${BYBIT_BASE}/market/kline?symbol=${symbol}&interval=${intervalo}&limit=2`;
+                    const proxyUrl = `${CORS_PROXY}${encodeURIComponent(url)}`;
+                    const resposta = await bybitRateLimiter.execute(async () => {
+                        const ctrl = new AbortController();
+                        const t = setTimeout(() => ctrl.abort(), 8000);
+                        try {
+                            const res = await fetch(proxyUrl, { signal: ctrl.signal });
+                            clearTimeout(t);
+                            return res;
+                        } catch (e) { clearTimeout(t); throw e; }
+                    });
+                    if (!resposta.ok) throw new Error(`HTTP ${resposta.status}`);
+                    const dados = await resposta.json();
+                    if (dados.retCode !== 0 || !dados.result?.list?.length) {
+                        throw new Error(`Bybit: ${dados.retMsg || 'sem dados'}`);
+                    }
+                    // Bybit kline: [timestamp, open, high, low, close, volume, turnover]
+                    dados.result.list.forEach(kline => {
+                        resultados.push({
+                            symbol,
+                            interval: intervalo,
+                            open: parseFloat(kline[1]),
+                            high: parseFloat(kline[2]),
+                            low: parseFloat(kline[3]),
+                            close: parseFloat(kline[4]),
+                            volume: parseFloat(kline[5]),
+                            timestamp: parseInt(kline[0])
+                        });
+                    });
+                } catch (err) {
+                    console.warn(`[Bybit] candlesticks ${symbol} ${intervalo}:`, err.message);
+                }
+            }
+
+            if (resultados.length > 0) {
+                _salvar_cache_candlesticks(symbol, resultados);
+                return resultados;
+            }
+
+            // Fallback: cache stale
+            try {
+                const chave = `scalping_cache_${symbol}`;
+                const cached = localStorage.getItem(chave);
+                if (cached) {
+                    const dados = JSON.parse(cached);
+                    if (dados.candlesticks?.length) {
+                        console.warn(`[Bybit] Cache stale para ${symbol}`);
+                        return dados.candlesticks;
+                    }
+                }
+            } catch (e) { /* ignore */ }
+            return [];
+        }
+        // ---- fim US-001 ----
+
         function useFetchTopGainers() {
             const [estado_carregamento, setEstadoCarregamento] = useState(true);
             const [erro, setErro] = useState(null);
