@@ -3,49 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Top 20 pares perpétuos USDT da Bybit - Melhores oportunidades por Score Scalping">
+    <meta name="description" content="Scalping Scanner - Top oportunidades em pares perpétuos USDT da Bybit">
     <meta name="theme-color" content="#0f172a">
-    <title>Top 20 por Score - Bybit USDT Perpétuos</title>
+    <title>Scalping Scanner - Bybit USDT Perpétuos</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/latest/umd/lucide.min.js"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        html {
-            scroll-behavior: smooth;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; -webkit-font-smoothing: antialiased; }
     </style>
 </head>
 <body class="bg-slate-950">
     <div id="root"></div>
 
     <script type="module">
-        const { useState, useEffect, useMemo, useCallback, useRef, Fragment: Fr } = React;
+        const { useState, useEffect, useCallback, useRef, Fragment: Fr } = React;
         const { createRoot } = ReactDOM;
 
-        const API_COINGECKO = 'https://api.coingecko.com/api/v3/derivatives';
-        const TIMEOUT_PADRAO = 15000;
+        // ============================================================
+        // Constants
+        // ============================================================
+        const API_CG_MARKETS  = 'https://api.coingecko.com/api/v3/coins/markets';
+        const BYBIT_BASE       = 'https://api.bybit.com/v5';
+        const TIMEOUT_PADRAO   = 20000;
 
-        // ---- US-001: Bybit Candlesticks ----
+        // Scalping filter thresholds
+        const F = {
+            VOL_MIN_USD:    10_000_000,   // Volume USDT 24h mínimo
+            VOLA_MIN:       5,            // Volatilidade 24h mínima %
+            VOLA_MAX:       15,           // Volatilidade 24h máxima %
+            RSI_MIN:        35,
+            RSI_MAX:        65,
+            MOM_1H_MIN:     2,            // Ganho 1h mínimo %
+            MOM_1H_MAX:     8,
+            MOM_4H_MIN:     3,
+            MOM_4H_MAX:     12,
+            VRATIO_MIN:     1.5,          // Volume vs média mínimo
+            VRATIO_MAX:     3.0,
+            SPREAD_MAX:     0.05,         // Spread máximo %
+            DEPTH_MIN:      500_000,      // Profundidade mínima cada lado USD
+        };
+
+        // ============================================================
+        // CORS Proxy chain
+        // ============================================================
         const CORS_PROXIES = [
-            url => url, // direto (Bybit suporta CORS para endpoints públicos)
+            url => url,
             url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
             url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
         ];
-        const BYBIT_BASE = 'https://api.bybit.com/v5';
-        const CACHE_TTL_CANDLESTICKS = 60000; // 60s
 
         async function fetchBybitJSON(url, signal) {
             for (const makeUrl of CORS_PROXIES) {
@@ -63,276 +71,143 @@
             throw new Error('Todos os proxies falharam');
         }
 
+        // ============================================================
+        // Rate Limiter
+        // ============================================================
         class RateLimiter {
-            constructor(maxCallsPerSecond) {
-                this.maxCallsPerSecond = maxCallsPerSecond;
+            constructor(rps) {
+                this.rps = rps;
                 this.queue = [];
-                this.callTimestamps = [];
-                this.processing = false;
+                this.ts = [];
+                this.running = false;
             }
-
             execute(fn) {
-                return new Promise((resolve, reject) => {
-                    this.queue.push({ fn, resolve, reject });
-                    if (!this.processing) this._processQueue();
+                return new Promise((res, rej) => {
+                    this.queue.push({ fn, res, rej });
+                    if (!this.running) this._run();
                 });
             }
-
-            async _processQueue() {
-                this.processing = true;
-                while (this.queue.length > 0) {
+            async _run() {
+                this.running = true;
+                while (this.queue.length) {
                     const now = Date.now();
-                    this.callTimestamps = this.callTimestamps.filter(ts => now - ts < 1000);
-                    if (this.callTimestamps.length >= this.maxCallsPerSecond) {
-                        const waitTime = 1000 - (now - this.callTimestamps[0]) + 1;
-                        await new Promise(r => setTimeout(r, waitTime));
+                    this.ts = this.ts.filter(t => now - t < 1000);
+                    if (this.ts.length >= this.rps) {
+                        await new Promise(r => setTimeout(r, 1000 - (now - this.ts[0]) + 1));
                         continue;
                     }
-                    const { fn, resolve, reject } = this.queue.shift();
-                    this.callTimestamps.push(Date.now());
-                    try { resolve(await fn()); } catch (e) { reject(e); }
+                    const { fn, res, rej } = this.queue.shift();
+                    this.ts.push(Date.now());
+                    try { res(await fn()); } catch (e) { rej(e); }
                 }
-                this.processing = false;
+                this.running = false;
             }
         }
+        const rl = new RateLimiter(20);
 
-        const bybitRateLimiter = new RateLimiter(20);
-
-        function _obter_cache_candlesticks(symbol) {
-            try {
-                const chave = `scalping_cache_${symbol}`;
-                const cached = localStorage.getItem(chave);
-                if (!cached) return null;
-                const dados = JSON.parse(cached);
-                if (Date.now() - dados.timestamp_cache < CACHE_TTL_CANDLESTICKS) {
-                    return dados.candlesticks || null;
-                }
-                return null;
-            } catch (e) { return null; }
+        // ============================================================
+        // RSI – Wilder's smoothed method
+        // ============================================================
+        function calcularRSI(closes, p = 14) {
+            if (!closes || closes.length < p + 1) return null;
+            let g = 0, l = 0;
+            for (let i = 1; i <= p; i++) {
+                const d = closes[i] - closes[i - 1];
+                d > 0 ? g += d : l -= d;
+            }
+            let ag = g / p, al = l / p;
+            for (let i = p + 1; i < closes.length; i++) {
+                const d = closes[i] - closes[i - 1];
+                ag = (ag * (p - 1) + Math.max(0, d)) / p;
+                al = (al * (p - 1) + Math.max(0, -d)) / p;
+            }
+            if (al === 0) return 100;
+            return Math.round((100 - 100 / (1 + ag / al)) * 10) / 10;
         }
 
-        function _salvar_cache_candlesticks(symbol, candlesticks) {
+        // ============================================================
+        // CoinGecko – Top 200 por market cap
+        // ============================================================
+        async function buscarCoinGeckoTop200() {
+            const url = new URL(API_CG_MARKETS);
+            url.searchParams.set('vs_currency', 'usd');
+            url.searchParams.set('order', 'market_cap_desc');
+            url.searchParams.set('per_page', '200');
+            url.searchParams.set('page', '1');
+            url.searchParams.set('sparkline', 'false');
+
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), TIMEOUT_PADRAO);
             try {
-                const chave = `scalping_cache_${symbol}`;
-                const existente = JSON.parse(localStorage.getItem(chave) || '{}');
-                localStorage.setItem(chave, JSON.stringify({
-                    ...existente,
-                    candlesticks,
-                    timestamp_cache: Date.now()
-                }));
+                const res = await fetch(url.toString(), {
+                    headers: { accept: 'application/json' },
+                    signal: ctrl.signal,
+                });
+                clearTimeout(t);
+                if (res.status === 429) throw new Error('Rate limit CoinGecko. Aguarde e tente novamente.');
+                if (!res.ok) throw new Error(`CoinGecko: ${res.status} ${res.statusText}`);
+                const dados = await res.json();
+                if (!Array.isArray(dados)) throw new Error('Resposta CoinGecko inválida');
+                // Mapa: bybitSymbol → { rank, nome, cg_id }
+                const mapa = {};
+                dados.forEach((c, i) => {
+                    mapa[c.symbol.toUpperCase() + 'USDT'] = { rank: i + 1, nome: c.name, cg_id: c.id };
+                });
+                return mapa;
             } catch (e) {
-                console.warn('[Cache] Falha ao salvar candlesticks:', e);
+                clearTimeout(t);
+                throw e;
             }
         }
 
-        async function buscar_candlesticks_bybit(symbol, intervalos = ['60', '240']) {
-            const cache = _obter_cache_candlesticks(symbol);
-            if (cache) return cache;
-
-            const resultados = [];
-            for (const intervalo of intervalos) {
+        // ============================================================
+        // Bybit – Todos os tickers linear em uma chamada
+        // ============================================================
+        async function buscarTickersBybit() {
+            const url = `${BYBIT_BASE}/market/tickers?category=linear`;
+            const dados = await rl.execute(async () => {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort('timeout'), 15000);
                 try {
-                    const url = `${BYBIT_BASE}/market/kline?category=linear&symbol=${symbol}&interval=${intervalo}&limit=5`;
-                    const dados = await bybitRateLimiter.execute(async () => {
-                        const ctrl = new AbortController();
-                        const t = setTimeout(() => ctrl.abort('timeout'), 8000);
-                        try {
-                            const json = await fetchBybitJSON(url, ctrl.signal);
-                            clearTimeout(t);
-                            return json;
-                        } catch (e) { clearTimeout(t); throw e; }
-                    });
-                    if (dados.retCode !== 0 || !dados.result?.list?.length) {
-                        throw new Error(`Bybit: ${dados.retMsg || 'sem dados'}`);
-                    }
-                    // Bybit kline: [timestamp, open, high, low, close, volume, turnover]
-                    dados.result.list.forEach(kline => {
-                        resultados.push({
-                            symbol,
-                            interval: intervalo,
-                            open: parseFloat(kline[1]),
-                            high: parseFloat(kline[2]),
-                            low: parseFloat(kline[3]),
-                            close: parseFloat(kline[4]),
-                            volume: parseFloat(kline[5]),
-                            timestamp: parseInt(kline[0])
-                        });
-                    });
-                } catch (err) {
-                    console.warn(`[Bybit] candlesticks ${symbol} ${intervalo}:`, err.message);
-                }
-            }
-
-            if (resultados.length > 0) {
-                _salvar_cache_candlesticks(symbol, resultados);
-                return resultados;
-            }
-
-            // Fallback: cache stale
-            try {
-                const chave = `scalping_cache_${symbol}`;
-                const cached = localStorage.getItem(chave);
-                if (cached) {
-                    const dados = JSON.parse(cached);
-                    if (dados.candlesticks?.length) {
-                        console.warn(`[Bybit] Cache stale para ${symbol}`);
-                        return dados.candlesticks;
-                    }
-                }
-            } catch (e) { /* ignore */ }
-            return [];
-        }
-        // ---- fim US-001 ----
-
-        // ---- US-002: Momentum Intraday ----
-        function calcular_momentum(candlesticks) {
-            if (!candlesticks || candlesticks.length === 0) {
-                return { percentual_1h: null, percentual_4h: null, status: 'sem_dados' };
-            }
-
-            // Agrupar por intervalo; Bybit retorna mais recente primeiro (index 0 = atual, index 1 = primeira vela)
-            const por_intervalo = {};
-            candlesticks.forEach(c => {
-                if (!por_intervalo[c.interval]) por_intervalo[c.interval] = [];
-                por_intervalo[c.interval].push(c);
+                    const json = await fetchBybitJSON(url, ctrl.signal);
+                    clearTimeout(t);
+                    return json;
+                } catch (e) { clearTimeout(t); throw e; }
             });
-
-            function _calcular_percentual(candles) {
-                if (!candles || candles.length < 2) return null;
-                const close_atual = candles[0].close;
-                const open_primeira_vela = candles[1].open;
-                if (open_primeira_vela === 0) return null;
-                return ((close_atual - open_primeira_vela) / open_primeira_vela) * 100;
+            if (dados.retCode !== 0 || !dados.result?.list) {
+                throw new Error(`Bybit tickers: ${dados.retMsg}`);
             }
-
-            const percentual_1h = _calcular_percentual(por_intervalo['60']);
-            const percentual_4h = _calcular_percentual(por_intervalo['240']);
-
-            function _eh_em_formacao(pct) {
-                if (pct === null) return false;
-                const abs = Math.abs(pct);
-                return abs > 2 && abs < 10;
+            const mapa = {};
+            for (const t of dados.result.list) {
+                if (!t.symbol.endsWith('USDT')) continue;
+                const price    = parseFloat(t.lastPrice)   || 0;
+                const prev1h   = parseFloat(t.prevPrice1h)  || 0;
+                const prev24h  = parseFloat(t.prevPrice24h) || 0;
+                const high24h  = parseFloat(t.highPrice24h) || 0;
+                const low24h   = parseFloat(t.lowPrice24h)  || 0;
+                const ask1     = parseFloat(t.ask1Price)    || 0;
+                const bid1     = parseFloat(t.bid1Price)    || 0;
+                mapa[t.symbol] = {
+                    simbolo:         t.symbol,
+                    preco:           price,
+                    ganho_1h:        prev1h  > 0 ? ((price - prev1h)  / prev1h)  * 100 : 0,
+                    ganho_24h:       prev24h > 0 ? ((price - prev24h) / prev24h) * 100 : 0,
+                    volatilidade_24h: prev24h > 0 ? ((high24h - low24h) / prev24h) * 100 : 0,
+                    volume_usd_24h:  parseFloat(t.turnover24h) || 0,
+                    spread_pct:      ask1 > 0 ? ((ask1 - bid1) / ask1) * 100 : 999,
+                    funding_rate:    parseFloat(t.fundingRate) * 100 || 0,
+                };
             }
-
-            const formacao_1h = _eh_em_formacao(percentual_1h);
-            const formacao_4h = _eh_em_formacao(percentual_4h);
-
-            let status;
-            if (formacao_1h && formacao_4h) {
-                status = 'em_formacao_confirmada';
-            } else if (formacao_1h || formacao_4h) {
-                status = 'em_formacao';
-            } else {
-                status = 'falso_sinal';
-            }
-
-            return { percentual_1h, percentual_4h, status };
+            return mapa;
         }
-        // ---- fim US-002 ----
 
-        // ---- US-003: Rejeição de Níveis ----
-        function analisar_rejeicao_niveis(candlesticks) {
-            if (!candlesticks || candlesticks.length === 0) {
-                return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
-            }
-
-            // Agrupar por intervalo
-            const por_intervalo = {};
-            candlesticks.forEach(c => {
-                if (!por_intervalo[c.interval]) por_intervalo[c.interval] = [];
-                por_intervalo[c.interval].push(c);
-            });
-
-            function _calcular_sma_volume(candles) {
-                if (!candles || candles.length === 0) return 0;
-                return candles.reduce((sum, c) => sum + c.volume, 0) / candles.length;
-            }
-
-            function _calcular_forca(wick_size, candle_body) {
-                if (candle_body === 0) return wick_size > 0 ? 10 : 0;
-                const ratio = wick_size / candle_body;
-                return Math.round(Math.min(10, Math.max(1, ratio * 2)));
-            }
-
-            function _analisar_intervalo(candles) {
-                if (!candles || candles.length === 0) {
-                    return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
-                }
-
-                const vela = candles[0]; // mais recente (Bybit retorna desc)
-                const sma_volume = _calcular_sma_volume(candles);
-                if (vela.volume <= sma_volume) {
-                    return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
-                }
-
-                const wick_topo = vela.high - vela.close;
-                const wick_fundo = vela.close - vela.low;
-                const candle_body = Math.abs(vela.close - vela.open);
-
-                // Lógica: rejeição topo se wick_topo > (close - low) * 0.5
-                const tem_rejeicao_topo = wick_topo > (vela.close - vela.low) * 0.5;
-                // Lógica: rejeição fundo se wick_fundo > (high - close) * 0.5
-                const tem_rejeicao_fundo = wick_fundo > (vela.high - vela.close) * 0.5;
-
-                if (tem_rejeicao_topo && wick_topo >= wick_fundo) {
-                    return { tem_rejeicao: true, tipo: 'rejeicao_topo', forca: _calcular_forca(wick_topo, candle_body) };
-                } else if (tem_rejeicao_fundo) {
-                    return { tem_rejeicao: true, tipo: 'rejeicao_fundo', forca: _calcular_forca(wick_fundo, candle_body) };
-                } else if (tem_rejeicao_topo) {
-                    return { tem_rejeicao: true, tipo: 'rejeicao_topo', forca: _calcular_forca(wick_topo, candle_body) };
-                }
-                return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
-            }
-
-            const resultados = Object.values(por_intervalo).map(_analisar_intervalo);
-            const com_rejeicao = resultados.filter(r => r.tem_rejeicao);
-            if (com_rejeicao.length === 0) {
-                return { tem_rejeicao: false, tipo: 'nenhuma', forca: 0 };
-            }
-
-            // Retorna a rejeição mais forte entre os intervalos
-            return com_rejeicao.reduce((best, curr) => curr.forca > best.forca ? curr : best);
-        }
-        // ---- fim US-003 ----
-
-        // ---- US-004: Order Book e Cost-to-Move ----
-        const CACHE_TTL_ORDER_BOOK = 5000; // 5s
-        const COST_TO_MOVE_MIN_USD = 50000; // $50K
-
-        function _obter_cache_order_book(symbol) {
+        // ============================================================
+        // Bybit – Candlesticks (RSI + volume ratio + ganho candle)
+        // ============================================================
+        async function buscarCandles(symbol, interval, limit = 20) {
+            const url = `${BYBIT_BASE}/market/kline?category=linear&symbol=${symbol}&interval=${interval}&limit=${limit}`;
             try {
-                const chave = `scalping_cache_${symbol}`;
-                const cached = localStorage.getItem(chave);
-                if (!cached) return null;
-                const dados = JSON.parse(cached);
-                if (dados.order_book && Date.now() - (dados.timestamp_order_book || 0) < CACHE_TTL_ORDER_BOOK) {
-                    return dados.order_book;
-                }
-                return null;
-            } catch (e) { return null; }
-        }
-
-        function _salvar_cache_order_book(symbol, order_book) {
-            try {
-                const chave = `scalping_cache_${symbol}`;
-                const existente = JSON.parse(localStorage.getItem(chave) || '{}');
-                localStorage.setItem(chave, JSON.stringify({
-                    ...existente,
-                    order_book,
-                    timestamp_order_book: Date.now()
-                }));
-            } catch (e) {
-                console.warn('[Cache] Falha ao salvar order book:', e);
-            }
-        }
-
-        async function buscar_order_book(symbol, limit = 20) {
-            const cache = _obter_cache_order_book(symbol);
-            if (cache) return cache;
-
-            try {
-                const url = `${BYBIT_BASE}/market/orderbook?category=linear&symbol=${symbol}&limit=${limit}`;
-                const dados = await bybitRateLimiter.execute(async () => {
+                const dados = await rl.execute(async () => {
                     const ctrl = new AbortController();
                     const t = setTimeout(() => ctrl.abort('timeout'), 8000);
                     try {
@@ -341,754 +216,667 @@
                         return json;
                     } catch (e) { clearTimeout(t); throw e; }
                 });
-                if (dados.retCode !== 0 || !dados.result) {
-                    throw new Error(`Bybit: ${dados.retMsg || 'sem dados'}`);
-                }
-                // Bybit v5 order book: b = bids [[price, size],...] desc, a = asks [[price, size],...] asc
-                const bids = (dados.result.b || []).map(([price, size]) => ({
-                    price: parseFloat(price),
-                    size: parseFloat(size)
+                if (dados.retCode !== 0 || !dados.result?.list?.length) return null;
+
+                // Bybit retorna mais recente primeiro → inverter para cronológico
+                const candles = dados.result.list.slice().reverse().map(k => ({
+                    open:   parseFloat(k[1]),
+                    high:   parseFloat(k[2]),
+                    low:    parseFloat(k[3]),
+                    close:  parseFloat(k[4]),
+                    volume: parseFloat(k[5]),
                 }));
-                const asks = (dados.result.a || []).map(([price, size]) => ({
-                    price: parseFloat(price),
-                    size: parseFloat(size)
-                }));
-                const order_book = { bids, asks, timestamp: Date.now() };
-                _salvar_cache_order_book(symbol, order_book);
-                return order_book;
-            } catch (err) {
-                console.warn(`[Bybit] order book ${symbol}:`, err.message);
-                // Fallback: cache stale
-                try {
-                    const chave = `scalping_cache_${symbol}`;
-                    const cached = localStorage.getItem(chave);
-                    if (cached) {
-                        const dados = JSON.parse(cached);
-                        if (dados.order_book?.bids?.length) {
-                            console.warn(`[Bybit] Cache stale order book para ${symbol}`);
-                            return dados.order_book;
-                        }
-                    }
-                } catch (e) { /* ignore */ }
+
+                const closes = candles.map(c => c.close);
+                const rsi    = calcularRSI(closes);
+
+                // Volume ratio: última vela vs SMA das anteriores
+                const prev    = candles.slice(0, -1);
+                const smaVol  = prev.length ? prev.reduce((s, c) => s + c.volume, 0) / prev.length : 0;
+                const ultimo  = candles[candles.length - 1];
+                const vRatio  = smaVol > 0 ? ultimo.volume / smaVol : 0;
+
+                // Ganho da vela mais recente (open → close)
+                const gainPct = ultimo.open > 0 ? ((ultimo.close - ultimo.open) / ultimo.open) * 100 : null;
+
+                // Rejeição de níveis
+                const rejeicao = analisarRejeicao(candles);
+
+                return { rsi, vRatio, gainPct, candles, rejeicao };
+            } catch (e) {
+                console.warn(`[candles] ${symbol} ${interval}:`, e.message);
                 return null;
             }
         }
 
-        function calcular_cost_to_move(order_book) {
-            if (!order_book || !order_book.bids?.length || !order_book.asks?.length) {
-                return { cost_to_move_up_usd: 0, cost_to_move_down_usd: 0, spread_atual: 0, tem_liquidez: false };
-            }
+        function analisarRejeicao(candles) {
+            if (!candles?.length) return { tem: false, tipo: 'nenhuma', forca: 0 };
+            const v     = candles[candles.length - 1]; // mais recente
+            const prev  = candles.slice(0, -1);
+            const sma   = prev.length ? prev.reduce((s, c) => s + c.volume, 0) / prev.length : 0;
+            if (v.volume <= sma) return { tem: false, tipo: 'nenhuma', forca: 0 };
 
-            const melhor_bid = order_book.bids[0]?.price || 0;
-            const melhor_ask = order_book.asks[0]?.price || 0;
-            const preco_medio = (melhor_bid + melhor_ask) / 2;
-            if (preco_medio === 0) {
-                return { cost_to_move_up_usd: 0, cost_to_move_down_usd: 0, spread_atual: 0, tem_liquidez: false };
-            }
+            const body  = Math.abs(v.close - v.open);
+            const wtopo = v.high - Math.max(v.close, v.open);
+            const wfund = Math.min(v.close, v.open) - v.low;
+            const forca = w => body > 0 ? Math.round(Math.min(10, Math.max(1, (w / body) * 2))) : (w > 0 ? 10 : 0);
 
-            const spread_atual = melhor_ask > 0 ? ((melhor_ask - melhor_bid) / melhor_ask) * 100 : 0;
-
-            // Cost to move UP 1%: accumulate ask volume until price > preco_medio * 1.01
-            const preco_alvo_up = preco_medio * 1.01;
-            let cost_to_move_up_usd = 0;
-            for (const nivel of order_book.asks) {
-                if (nivel.price > preco_alvo_up) break;
-                cost_to_move_up_usd += nivel.price * nivel.size;
-            }
-
-            // Cost to move DOWN 1%: accumulate bid volume until price < preco_medio * 0.99
-            const preco_alvo_down = preco_medio * 0.99;
-            let cost_to_move_down_usd = 0;
-            for (const nivel of order_book.bids) {
-                if (nivel.price < preco_alvo_down) break;
-                cost_to_move_down_usd += nivel.price * nivel.size;
-            }
-
-            const tem_liquidez = cost_to_move_up_usd >= COST_TO_MOVE_MIN_USD && cost_to_move_down_usd >= COST_TO_MOVE_MIN_USD;
-
-            return { cost_to_move_up_usd, cost_to_move_down_usd, spread_atual, tem_liquidez };
-        }
-        // ---- fim US-004 ----
-
-        // ---- US-005: Score Combinado ----
-        const SCORE_HISTORY_KEY = 'scalping_scores_history';
-        const SCORE_HISTORY_MAX = 100;
-
-        // Pesos: momentum(10pts) + rejeicao(20pts) + liquidez(15pts) + volume(30pts) + volatilidade(25pts)
-        const SCORE_PESOS = { momentum: 0.10, rejeicao: 0.20, liquidez: 0.15, volume: 0.30, volatilidade: 0.25 };
-
-        function _normalizar_momentum(momentum) {
-            if (!momentum || momentum.status === 'sem_dados') return 0;
-            if (momentum.status === 'em_formacao_confirmada') return 100;
-            if (momentum.status === 'em_formacao') return 50;
-            return 0;
+            if (wtopo > wfund * 1.5) return { tem: true, tipo: 'rejeicao_topo',  forca: forca(wtopo) };
+            if (wfund > wtopo * 1.5) return { tem: true, tipo: 'rejeicao_fundo', forca: forca(wfund) };
+            return { tem: false, tipo: 'nenhuma', forca: 0 };
         }
 
-        function _normalizar_rejeicao(rejeicao) {
-            if (!rejeicao || !rejeicao.tem_rejeicao) return 0;
-            return (rejeicao.forca / 10) * 100;
-        }
-
-        function _normalizar_liquidez(liquidez) {
-            if (!liquidez) return 0;
-            if (liquidez.tem_liquidez) return 100;
-            const min_cost = Math.min(liquidez.cost_to_move_up_usd || 0, liquidez.cost_to_move_down_usd || 0);
-            if (min_cost <= 0) return 0;
-            return Math.min(100, (min_cost / COST_TO_MOVE_MIN_USD) * 100);
-        }
-
-        function _extrair_metricas_candlestick(candlesticks) {
-            if (!candlesticks || candlesticks.length === 0) return { volume_ratio: 0, volatilidade_pct: 0 };
-            const por_intervalo = {};
-            candlesticks.forEach(c => {
-                if (!por_intervalo[c.interval]) por_intervalo[c.interval] = [];
-                por_intervalo[c.interval].push(c);
-            });
-            let total_volume_ratio = 0;
-            let total_volatilidade = 0;
-            let count = 0;
-            for (const candles of Object.values(por_intervalo)) {
-                if (candles.length === 0) continue;
-                const vela = candles[0]; // mais recente
-                const sma = candles.reduce((sum, c) => sum + c.volume, 0) / candles.length;
-                const volume_ratio = sma > 0 ? vela.volume / sma : 1;
-                const volatilidade_pct = vela.close > 0 ? ((vela.high - vela.low) / vela.close) * 100 : 0;
-                total_volume_ratio += volume_ratio;
-                total_volatilidade += volatilidade_pct;
-                count++;
-            }
-            return {
-                volume_ratio: count > 0 ? total_volume_ratio / count : 0,
-                volatilidade_pct: count > 0 ? total_volatilidade / count : 0
-            };
-        }
-
-        function _normalizar_volume(volume_ratio) {
-            // volume_ratio: 1 = médio, 3+ = excelente para scalping
-            if (volume_ratio <= 0) return 0;
-            return Math.min(100, (volume_ratio / 3) * 100);
-        }
-
-        function _normalizar_volatilidade(volatilidade_pct) {
-            // Faixa ótima para scalping: 1-5%
-            if (volatilidade_pct <= 0) return 0;
-            if (volatilidade_pct < 1) return volatilidade_pct * 60;
-            if (volatilidade_pct <= 5) return 60 + ((volatilidade_pct - 1) / 4) * 40;
-            // Acima de 5%: muito volátil, penalizar progressivamente
-            return Math.max(0, 100 - (volatilidade_pct - 5) * 10);
-        }
-
-        function _salvar_score_historico(moeda, score) {
+        // ============================================================
+        // Bybit – Order book (spread real + profundidade)
+        // ============================================================
+        async function buscarLiquidez(symbol) {
+            const url = `${BYBIT_BASE}/market/orderbook?category=linear&symbol=${symbol}&limit=50`;
             try {
-                const historico = JSON.parse(localStorage.getItem(SCORE_HISTORY_KEY) || '[]');
-                historico.push({ moeda, score, timestamp: Date.now() });
-                if (historico.length > SCORE_HISTORY_MAX) {
-                    historico.splice(0, historico.length - SCORE_HISTORY_MAX);
-                }
-                localStorage.setItem(SCORE_HISTORY_KEY, JSON.stringify(historico));
-            } catch (e) {
-                console.warn('[Score] Falha ao salvar histórico:', e);
-            }
-        }
-
-        function calcular_score_combinado(moeda, metricas, pesos_custom) {
-            const { momentum, rejeicao, liquidez, candlesticks } = metricas || {};
-
-            // Normalizar pesos customizados se fornecidos
-            let pesos = SCORE_PESOS;
-            if (pesos_custom) {
-                const total = Object.values(pesos_custom).reduce((s, v) => s + v, 0);
-                if (total > 0) {
-                    pesos = {};
-                    for (const [k, v] of Object.entries(pesos_custom)) {
-                        pesos[k] = v / total;
-                    }
-                }
-            }
-
-            const n_momentum = _normalizar_momentum(momentum);
-            const n_rejeicao = _normalizar_rejeicao(rejeicao);
-            const n_liquidez = _normalizar_liquidez(liquidez);
-            const { volume_ratio, volatilidade_pct } = _extrair_metricas_candlestick(candlesticks || []);
-            const n_volume = _normalizar_volume(volume_ratio);
-            const n_volatilidade = _normalizar_volatilidade(volatilidade_pct);
-
-            const score_bruto =
-                n_momentum * pesos.momentum +
-                n_rejeicao * pesos.rejeicao +
-                n_liquidez * pesos.liquidez +
-                n_volume * pesos.volume +
-                n_volatilidade * pesos.volatilidade;
-
-            const score = Math.min(100, Math.max(0, Math.round(score_bruto)));
-
-            const breakdown = {
-                momentum: Math.round(n_momentum * pesos.momentum * 10) / 10,
-                rejeicao: Math.round(n_rejeicao * pesos.rejeicao * 10) / 10,
-                liquidez: Math.round(n_liquidez * pesos.liquidez * 10) / 10,
-                volume: Math.round(n_volume * pesos.volume * 10) / 10,
-                volatilidade: Math.round(n_volatilidade * pesos.volatilidade * 10) / 10
-            };
-
-            _salvar_score_historico(moeda, score);
-            return { score, breakdown };
-        }
-
-        function ordenar_por_score(moedas_com_score) {
-            return [...moedas_com_score].sort((a, b) => {
-                if (b.score !== a.score) return b.score - a.score;
-                return b.percentual_24h - a.percentual_24h;
-            });
-        }
-        // ---- fim US-005 ----
-
-        // ---- US-006: Métricas Bybit na Tabela ----
-        function useBybitMetrics(pares, pesos_config) {
-            const [metricas_map, setMetricasMap] = useState({});
-            const [bybit_disponivel, setBybitDisponivel] = useState(true);
-            const [bybit_carregando, setBybitCarregando] = useState(false);
-            const [ultima_atualizacao_bybit, setUltimaAtualizacaoBybit] = useState(null);
-            const pesos_ref = useRef(pesos_config);
-            const em_execucao_ref = useRef(false);
-            useEffect(() => { pesos_ref.current = pesos_config; }, [pesos_config]);
-
-            const calcular_metricas_par = useCallback(async (par) => {
-                const symbol = par.simbolo;
-                try {
-                    const [candlesticks, order_book] = await Promise.all([
-                        buscar_candlesticks_bybit(symbol),
-                        buscar_order_book(symbol)
-                    ]);
-                    const momentum = calcular_momentum(candlesticks);
-                    const rejeicao = analisar_rejeicao_niveis(candlesticks);
-                    const liquidez = calcular_cost_to_move(order_book);
-                    const { score, breakdown } = calcular_score_combinado(symbol, { momentum, rejeicao, liquidez, candlesticks }, pesos_ref.current);
-                    const { volume_ratio, volatilidade_pct } = _extrair_metricas_candlestick(candlesticks || []);
-                    return { momentum, rejeicao, liquidez, score, breakdown, volume_ratio, volatilidade_pct, symbol, timestamp: Date.now() };
-                } catch (err) {
-                    console.warn(`[US-006] Métricas ${symbol}:`, err.message);
-                    return null;
-                }
-            }, []);
-
-            useEffect(() => {
-                if (!pares.length || em_execucao_ref.current) return;
-                const executar = async () => {
-                    em_execucao_ref.current = true;
-                    setBybitCarregando(true);
+                const dados = await rl.execute(async () => {
+                    const ctrl = new AbortController();
+                    const t = setTimeout(() => ctrl.abort('timeout'), 8000);
                     try {
-                        const resultados = await Promise.all(pares.map(calcular_metricas_par));
-                        const novo_map = {};
-                        resultados.forEach((r) => { if (r) novo_map[r.symbol] = r; });
-                        setMetricasMap(novo_map);
-                        setBybitDisponivel(Object.keys(novo_map).length > 0);
-                        setUltimaAtualizacaoBybit(Date.now());
-                    } finally {
-                        em_execucao_ref.current = false;
-                        setBybitCarregando(false);
-                    }
-                };
-                executar();
-            }, [pares, calcular_metricas_par]);
+                        const json = await fetchBybitJSON(url, ctrl.signal);
+                        clearTimeout(t);
+                        return json;
+                    } catch (e) { clearTimeout(t); throw e; }
+                });
+                if (dados.retCode !== 0 || !dados.result) return { depth_bid: 0, depth_ask: 0, spread_pct: 999 };
 
-            return { metricas_map, bybit_disponivel, bybit_carregando, ultima_atualizacao_bybit };
-        }
+                const bids = (dados.result.b || []).map(([p, s]) => ({ p: parseFloat(p), s: parseFloat(s) }));
+                const asks = (dados.result.a || []).map(([p, s]) => ({ p: parseFloat(p), s: parseFloat(s) }));
+                if (!bids.length || !asks.length) return { depth_bid: 0, depth_ask: 0, spread_pct: 999 };
 
-        function formatar_usd_compacto(valor) {
-            if (!valor || valor <= 0) return '$0';
-            if (valor >= 1000000) return `$${(valor / 1000000).toFixed(1)}M`;
-            if (valor >= 1000) return `$${(valor / 1000).toFixed(0)}K`;
-            return `$${valor.toFixed(0)}`;
-        }
+                const mid       = (bids[0].p + asks[0].p) / 2;
+                const spreadPct = asks[0].p > 0 ? ((asks[0].p - bids[0].p) / asks[0].p) * 100 : 999;
 
-        function CelulaMomentum({ momentum }) {
-            if (!momentum || momentum.status === 'sem_dados') {
-                return React.createElement('span', { className: 'text-slate-500 text-xs' }, '—');
+                // Profundidade dentro de 0.5% do mid price
+                const depthBid = bids.filter(b => b.p >= mid * 0.995).reduce((s, b) => s + b.p * b.s, 0);
+                const depthAsk = asks.filter(a => a.p <= mid * 1.005).reduce((s, a) => s + a.p * a.s, 0);
+
+                return { depth_bid: depthBid, depth_ask: depthAsk, spread_pct: spreadPct };
+            } catch (e) {
+                console.warn(`[orderbook] ${symbol}:`, e.message);
+                return { depth_bid: 0, depth_ask: 0, spread_pct: 999 };
             }
-            function _render_pct(pct, label) {
-                if (pct === null) return null;
-                const abs = Math.abs(pct);
-                const positivo = pct >= 0;
-                const em_formacao = abs > 2 && abs < 10;
-                const classe = em_formacao ? (positivo ? 'text-green-400' : 'text-red-400') : 'text-slate-500';
-                const seta = positivo ? '↑' : '↓';
-                return React.createElement('div', { className: `text-xs ${classe}` }, `${seta}${label}: ${pct.toFixed(1)}%`);
+        }
+
+        // ============================================================
+        // Métricas completas por par (candlesticks + order book)
+        // ============================================================
+        async function calcularMetricasPar(par) {
+            // 1h (RSI + vRatio), 15m (RSI), 4h (ganho candle) em paralelo + order book
+            const [d1h, d15m, d4h, liq] = await Promise.all([
+                buscarCandles(par.simbolo, '60',  20),
+                buscarCandles(par.simbolo, '15',  20),
+                buscarCandles(par.simbolo, '240', 10),
+                buscarLiquidez(par.simbolo),
+            ]);
+
+            return {
+                ...par,
+                rsi_1h:       d1h?.rsi    ?? null,
+                rsi_15m:      d15m?.rsi   ?? null,
+                ganho_4h:     d4h?.gainPct ?? null,
+                volume_ratio: d1h?.vRatio  ?? 0,
+                rejeicao:     d1h?.rejeicao ?? { tem: false, tipo: 'nenhuma', forca: 0 },
+                depth_bid:    liq.depth_bid,
+                depth_ask:    liq.depth_ask,
+                spread_pct:   liq.spread_pct < 999 ? liq.spread_pct : par.spread_pct,
+            };
+        }
+
+        // ============================================================
+        // Filtros (9 critérios)
+        // ============================================================
+        function verificarFiltros(par) {
+            const g1h = Math.abs(par.ganho_1h  ?? 0);
+            const g4h = par.ganho_4h !== null ? Math.abs(par.ganho_4h) : null;
+            return {
+                volume:       par.volume_usd_24h  >= F.VOL_MIN_USD,
+                volatilidade: par.volatilidade_24h >= F.VOLA_MIN && par.volatilidade_24h <= F.VOLA_MAX,
+                rsi_1h:       par.rsi_1h  !== null && par.rsi_1h  >= F.RSI_MIN && par.rsi_1h  <= F.RSI_MAX,
+                rsi_15m:      par.rsi_15m !== null && par.rsi_15m >= F.RSI_MIN && par.rsi_15m <= F.RSI_MAX,
+                momentum_1h:  g1h >= F.MOM_1H_MIN && g1h <= F.MOM_1H_MAX,
+                momentum_4h:  g4h !== null && g4h >= F.MOM_4H_MIN && g4h <= F.MOM_4H_MAX,
+                volume_ratio: par.volume_ratio >= F.VRATIO_MIN && par.volume_ratio <= F.VRATIO_MAX,
+                spread:       par.spread_pct <= F.SPREAD_MAX,
+                profundidade: par.depth_bid  >= F.DEPTH_MIN && par.depth_ask >= F.DEPTH_MIN,
+            };
+        }
+
+        // ============================================================
+        // Score 0–100 (contínuo, não binário)
+        // ============================================================
+        function calcularScore(par, filtros) {
+            let s = 0;
+
+            // Volume (0-20 pts) – escala log
+            if (filtros.volume) {
+                s += Math.min(20, 10 + Math.log10(par.volume_usd_24h / F.VOL_MIN_USD) * 5);
             }
-            return React.createElement('div', { className: 'flex flex-col gap-0.5' },
-                _render_pct(momentum.percentual_1h, '1h'),
-                _render_pct(momentum.percentual_4h, '4h')
-            );
-        }
 
-        function CelulaRejeicao({ rejeicao }) {
-            if (!rejeicao || rejeicao.tipo === 'nenhuma') {
-                return React.createElement('span', { className: 'text-slate-500 text-xs' }, '💤 —');
+            // Volatilidade (0-15 pts) – ótimo no centro da faixa
+            if (filtros.volatilidade) {
+                const center = (F.VOLA_MIN + F.VOLA_MAX) / 2;
+                const range  = (F.VOLA_MAX - F.VOLA_MIN) / 2;
+                s += Math.max(0, (1 - Math.abs(par.volatilidade_24h - center) / range) * 15);
             }
-            const icone = rejeicao.tipo === 'rejeicao_topo' ? '🔻' : '🔺';
-            const desc = rejeicao.tipo === 'rejeicao_topo' ? 'Topo' : 'Fundo';
-            return React.createElement('div', { className: 'text-xs' },
-                React.createElement('div', null, `${icone} ${desc}`),
-                React.createElement('div', { className: 'text-slate-400' }, `Força: ${rejeicao.forca}/10`)
-            );
-        }
 
-        function CelulaSpread({ liquidez }) {
-            if (!liquidez) return React.createElement('span', { className: 'text-slate-500 text-xs' }, '—');
-            const cor_spread = liquidez.spread_atual < 0.1 ? 'text-green-400' : (liquidez.spread_atual < 0.3 ? 'text-yellow-400' : 'text-red-400');
-            return React.createElement('div', { className: 'text-xs flex flex-col gap-0.5' },
-                React.createElement('span', { className: cor_spread }, `${liquidez.spread_atual.toFixed(3)}%`),
-                React.createElement('span', { className: 'text-emerald-400' }, `↑${formatar_usd_compacto(liquidez.cost_to_move_up_usd)}`),
-                React.createElement('span', { className: 'text-orange-400' }, `↓${formatar_usd_compacto(liquidez.cost_to_move_down_usd)}`)
-            );
-        }
+            // RSI (0-20 pts: 10+10)
+            const rsiPts = (rsi, max) => {
+                if (rsi === null) return 0;
+                const center = (F.RSI_MIN + F.RSI_MAX) / 2;
+                const range  = (F.RSI_MAX - F.RSI_MIN) / 2;
+                return Math.max(0, (1 - Math.abs(rsi - center) / range) * max);
+            };
+            s += rsiPts(par.rsi_1h, 10);
+            s += rsiPts(par.rsi_15m, 10);
 
-        function CelulaScore({ score }) {
-            if (score === undefined || score === null) {
-                return React.createElement('span', { className: 'text-slate-500 text-xs' }, '—');
+            // Momentum (0-20 pts: 10+10)
+            if (filtros.momentum_1h) s += 10;
+            if (filtros.momentum_4h) s += 10;
+
+            // Volume ratio (0-10 pts)
+            if (filtros.volume_ratio) {
+                const center = (F.VRATIO_MIN + F.VRATIO_MAX) / 2;
+                const range  = (F.VRATIO_MAX - F.VRATIO_MIN) / 2;
+                s += Math.max(0, (1 - Math.abs(par.volume_ratio - center) / range) * 10);
             }
-            const indicador = score > 70 ? '🟢' : (score >= 50 ? '🟡' : '🔴');
-            return React.createElement('div', { className: 'flex items-center gap-1 justify-center' },
-                React.createElement('span', null, indicador),
-                React.createElement('span', { className: 'font-bold text-white' }, score)
-            );
+
+            // Spread (0-10 pts)
+            if (filtros.spread) {
+                s += Math.max(0, 10 * (1 - par.spread_pct / F.SPREAD_MAX));
+            }
+
+            // Profundidade (0-15 pts) – escala log
+            if (filtros.profundidade) {
+                const minD = Math.min(par.depth_bid, par.depth_ask);
+                s += Math.min(15, 5 + Math.log10(minD / F.DEPTH_MIN) * 5);
+            }
+
+            return Math.round(Math.min(100, Math.max(0, s)));
         }
 
-        function CelulaStatusFiltros({ momentum, rejeicao, liquidez, volume_ratio, volatilidade_pct }) {
-            const filtros = [
-                { chave: 'M', ok: !!(momentum && momentum.status !== 'falso_sinal' && momentum.status !== 'sem_dados'), titulo: 'Momentum' },
-                { chave: 'R', ok: !!(rejeicao && rejeicao.tem_rejeicao), titulo: 'Rejeição' },
-                { chave: 'L', ok: !!(liquidez && liquidez.tem_liquidez), titulo: 'Liquidez' },
-                { chave: 'V', ok: !!(volume_ratio && volume_ratio > 1), titulo: 'Volume' },
-                { chave: 'Vl', ok: !!(volatilidade_pct && volatilidade_pct >= 1 && volatilidade_pct <= 5), titulo: 'Volatilidade' }
-            ];
-            return React.createElement('div', { className: 'flex gap-0.5 items-center justify-center flex-wrap' },
-                filtros.map(f => React.createElement('span', { key: f.chave, title: f.titulo, className: 'text-xs' }, f.ok ? '✅' : '❌'))
-            );
-        }
-        // ---- fim US-006 ----
+        // ============================================================
+        // Hook principal – sem auto-refresh
+        // ============================================================
+        function useScalpingData() {
+            const [estado,   setEstado]   = useState('idle');   // idle | carregando | concluido | erro
+            const [fase,     setFase]     = useState('');
+            const [prog,     setProg]     = useState(0);
+            const [pares,    setPares]    = useState([]);
+            const [erro,     setErro]     = useState(null);
+            const [atualizado, setAtualizado] = useState(null);
+            const [stats,    setStats]    = useState(null);
+            const [atualizandoFiltradas, setAtualizandoFiltradas] = useState(false);
+            const paresRef = useRef([]);
+            useEffect(() => { paresRef.current = pares; }, [pares]);
 
-        // ---- US-007: Dashboard de Status e Indicadores de Frescor ----
-        function limpar_historico_antigo() {
-            try {
-                const UM_DIA = 86400000;
-                const historico = JSON.parse(localStorage.getItem(SCORE_HISTORY_KEY) || '[]');
-                const agora = Date.now();
-                const filtrado = historico.filter(e => (agora - e.timestamp) < UM_DIA);
-                if (filtrado.length !== historico.length) {
-                    localStorage.setItem(SCORE_HISTORY_KEY, JSON.stringify(filtrado));
-                    console.info(`[Cache] Removidas ${historico.length - filtrado.length} entradas de histórico > 1 dia`);
+            const atualizarFiltradas = useCallback(async () => {
+                const lista = paresRef.current;
+                if (!lista.length || atualizandoFiltradas) return;
+                setAtualizandoFiltradas(true);
+                try {
+                    // Re-fetch tickers para preços/indicadores atualizados
+                    const bybitMapa = await buscarTickersBybit();
+
+                    // Re-fetch candlesticks + order book para cada par exibido
+                    const comMetricas = await Promise.all(
+                        lista.map(async par => {
+                            const ticker = bybitMapa[par.simbolo];
+                            const base   = ticker ? { ...par, ...ticker } : par;
+                            return calcularMetricasPar(base);
+                        })
+                    );
+
+                    const resultados = comMetricas
+                        .filter(Boolean)
+                        .map(par => {
+                            const filtros   = verificarFiltros(par);
+                            const score     = calcularScore(par, filtros);
+                            const filtrosOk = Object.values(filtros).filter(Boolean).length;
+                            return { ...par, filtros, score, filtrosOk };
+                        })
+                        .sort((a, b) => b.score !== a.score ? b.score - a.score : b.filtrosOk - a.filtrosOk);
+
+                    setPares(resultados);
+                    setAtualizado(Date.now());
+                } catch (e) {
+                    console.warn('[atualizarFiltradas]', e.message);
+                } finally {
+                    setAtualizandoFiltradas(false);
                 }
-            } catch (e) { console.warn('[Cache] Falha ao limpar histórico:', e); }
-        }
+            }, [atualizandoFiltradas]);
 
-        function DashboardStatus({ ultima_atualizacao_bybit, bybit_disponivel }) {
-            const [segundos_atras, setSegundosAtras] = useState(0);
-            useEffect(() => {
-                const intervalo = setInterval(() => {
-                    if (ultima_atualizacao_bybit) {
-                        setSegundosAtras(Math.round((Date.now() - ultima_atualizacao_bybit) / 1000));
-                    }
-                }, 1000);
-                return () => clearInterval(intervalo);
-            }, [ultima_atualizacao_bybit]);
-
-            const bybit_ts = ultima_atualizacao_bybit
-                ? new Date(ultima_atualizacao_bybit).toLocaleTimeString('pt-BR')
-                : null;
-
-            return React.createElement('div', {
-                className: "px-6 py-2 bg-slate-800/20 border-b border-slate-800 flex flex-wrap gap-x-4 gap-y-1 items-center text-xs"
-            },
-                React.createElement('span', { className: 'text-slate-400' },
-                    React.createElement('span', { className: 'text-blue-400 font-medium' }, '🔵 CoinGecko:'),
-                    ' Par · Preço · 24h%'
-                ),
-                bybit_disponivel
-                    ? React.createElement('span', { className: 'text-slate-400' },
-                        React.createElement('span', { className: 'text-yellow-400 font-medium' }, '🟡 Bybit:'),
-                        ' Momentum · Rejeição · Spread · Score · Filtros'
-                    )
-                    : React.createElement('span', { className: 'text-slate-500' }, '⚫ Usando dados CoinGecko apenas'),
-                bybit_ts && bybit_disponivel && React.createElement('span', { className: 'text-slate-500 ml-auto flex items-center gap-1' },
-                    `⏱️ Última atualização Bybit: ${bybit_ts} (${segundos_atras}s atrás)`,
-                    segundos_atras > 5 && React.createElement('span', { className: 'text-yellow-400' }, '⚠️')
-                )
-            );
-        }
-
-        function ConfigPesos({ pesos, setPesos }) {
-            const [aberto, setAberto] = useState(false);
-            const campos = [
-                { chave: 'momentum', label: 'Momentum', cor: 'text-blue-400' },
-                { chave: 'rejeicao', label: 'Rejeição', cor: 'text-purple-400' },
-                { chave: 'liquidez', label: 'Liquidez', cor: 'text-cyan-400' },
-                { chave: 'volume', label: 'Volume', cor: 'text-green-400' },
-                { chave: 'volatilidade', label: 'Volatilidade', cor: 'text-orange-400' }
-            ];
-            const total_pct = Math.round(Object.values(pesos).reduce((s, v) => s + v, 0) * 100);
-
-            return React.createElement('div', { className: 'relative' },
-                React.createElement('button', {
-                    onClick: () => setAberto(!aberto),
-                    className: `inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg transition-all font-medium ${aberto ? 'bg-slate-600 text-white' : 'bg-slate-700/50 hover:bg-slate-700 text-slate-300'}`
-                }, '⚙️ Pesos'),
-                aberto && React.createElement('div', {
-                    className: 'absolute right-0 top-10 z-20 w-72 bg-slate-800 border border-slate-700 rounded-xl shadow-xl p-4'
-                },
-                    React.createElement('h3', { className: 'text-sm font-semibold text-slate-200 mb-3' }, 'Pesos do Score Combinado'),
-                    campos.map(campo => React.createElement('div', { key: campo.chave, className: 'flex items-center gap-3 mb-2' },
-                        React.createElement('span', { className: `text-xs w-24 ${campo.cor}` }, campo.label),
-                        React.createElement('input', {
-                            type: 'range', min: 0, max: 50,
-                            value: Math.round(pesos[campo.chave] * 100),
-                            onChange: e => setPesos({ ...pesos, [campo.chave]: parseInt(e.target.value) / 100 }),
-                            className: 'flex-1 accent-cyan-500'
-                        }),
-                        React.createElement('span', { className: 'text-xs text-slate-400 w-10 text-right' },
-                            `${Math.round(pesos[campo.chave] * 100)}%`)
-                    )),
-                    React.createElement('div', {
-                        className: `text-xs mt-2 ${Math.abs(total_pct - 100) > 1 ? 'text-yellow-400' : 'text-slate-500'}`
-                    }, `Total: ${total_pct}% (será normalizado ao calcular)`),
-                    React.createElement('button', {
-                        onClick: () => setPesos({ ...SCORE_PESOS }),
-                        className: 'mt-3 text-xs text-slate-500 hover:text-slate-300 underline'
-                    }, 'Restaurar padrões')
-                )
-            );
-        }
-        // ---- fim US-007 ----
-
-        function useFetchTopGainers() {
-            const [estado_carregamento, setEstadoCarregamento] = useState(true);
-            const [erro, setErro] = useState(null);
-            const [pares, setPares] = useState([]);
-            const [ultima_atualizacao, setUltimaAtualizacao] = useState(null);
-
-            const buscar_pares = useCallback(async () => {
-                setEstadoCarregamento(true);
+            const buscarDados = useCallback(async () => {
+                setEstado('carregando');
                 setErro(null);
+                setProg(0);
+                setPares([]);
+                setStats(null);
 
                 try {
-                    const controller = new AbortController();
-                    const timeout = setTimeout(() => controller.abort(), TIMEOUT_PADRAO);
+                    // Fase 1 – CoinGecko + Bybit tickers em paralelo
+                    setFase('Buscando top 200 CoinGecko e tickers Bybit...');
+                    const [cgMapa, bybitMapa] = await Promise.all([
+                        buscarCoinGeckoTop200(),
+                        buscarTickersBybit(),
+                    ]);
+                    setProg(25);
 
-                    const url = new URL(API_COINGECKO);
-                    url.searchParams.set('include_tickers', 'perpetual');
-                    url.searchParams.set('order', 'name');
-                    url.searchParams.set('per_page', '100');
-                    url.searchParams.set('page', '1');
+                    // Fase 2 – Cross-reference + pré-filtro de volume
+                    setFase('Cruzando dados e filtrando candidatos...');
+                    const candidatos = [];
+                    for (const [sym, cg] of Object.entries(cgMapa)) {
+                        const ticker = bybitMapa[sym];
+                        if (!ticker) continue;
+                        if (ticker.volume_usd_24h < F.VOL_MIN_USD) continue;
+                        candidatos.push({ ...cg, ...ticker });
+                    }
+                    // Ordenar por rank de market cap, limitar a 50 para análise detalhada
+                    candidatos.sort((a, b) => a.rank - b.rank);
+                    const top50 = candidatos.slice(0, 50);
+                    setProg(35);
 
-                    const resposta = await fetch(url.toString(), {
-                        method: 'GET',
-                        headers: { 'accept': 'application/json' },
-                        signal: controller.signal
-                    });
-
-                    clearTimeout(timeout);
-
-                    if (resposta.status === 429) {
-                        setErro('⚠️ Limite de requisições atingido. Tente novamente em alguns minutos.');
-                        setEstadoCarregamento(false);
+                    if (top50.length === 0) {
+                        setStats({ totalBybit: Object.keys(bybitMapa).length, candidatos: 0, exibidos: 0 });
+                        setEstado('concluido');
+                        setAtualizado(Date.now());
                         return;
                     }
 
-                    if (!resposta.ok) {
-                        throw new Error(`Erro ${resposta.status}: ${resposta.statusText}`);
-                    }
+                    // Fase 3 – Candlesticks + order book em paralelo por par
+                    setFase(`Calculando RSI e liquidez para ${top50.length} candidatos...`);
+                    let done = 0;
+                    const comMetricas = await Promise.all(
+                        top50.map(async par => {
+                            const resultado = await calcularMetricasPar(par);
+                            done++;
+                            setProg(35 + Math.round((done / top50.length) * 55));
+                            return resultado;
+                        })
+                    );
 
-                    const dados = await resposta.json();
-                    const tickers_filtrados = Array.isArray(dados) ? dados : [];
+                    // Fase 4 – Filtros, score, ordenação
+                    setFase('Aplicando filtros e calculando scores...');
+                    const resultados = comMetricas
+                        .filter(Boolean)
+                        .map(par => {
+                            const filtros   = verificarFiltros(par);
+                            const score     = calcularScore(par, filtros);
+                            const filtrosOk = Object.values(filtros).filter(Boolean).length;
+                            return { ...par, filtros, score, filtrosOk };
+                        })
+                        .sort((a, b) => b.score !== a.score ? b.score - a.score : b.filtrosOk - a.filtrosOk)
+                        .slice(0, 20);
 
-                    const pares_processados = tickers_filtrados
-                        .filter(ticker => _eh_par_valido(ticker))
-                        .map(ticker => ({
-                            simbolo: ticker.symbol,
-                            preco: parseFloat(ticker.price || ticker.last || 0),
-                            percentual_24h: parseFloat(ticker.price_percentage_change_24h || 0)
-                        }))
-                        .filter(par => par.preco > 0.01)
-                        .slice(0, 50);
-
-                    setPares(pares_processados);
-                    setUltimaAtualizacao(new Date().toLocaleTimeString('pt-BR'));
-                } catch (err) {
-                    const mensagem = err.name === 'AbortError' 
-                        ? 'Timeout: Requisição demorou muito.' 
-                        : err.message;
-                    setErro(`❌ ${mensagem}`);
-                } finally {
-                    setEstadoCarregamento(false);
+                    setPares(resultados);
+                    setStats({ totalBybit: Object.keys(bybitMapa).length, candidatos: top50.length, exibidos: resultados.length });
+                    setAtualizado(Date.now());
+                    setEstado('concluido');
+                    setProg(100);
+                } catch (e) {
+                    setErro(`❌ ${e.message}`);
+                    setEstado('erro');
                 }
             }, []);
 
-            useEffect(() => {
-                buscar_pares();
-                const intervalo = setInterval(buscar_pares, 60000);
-                return () => clearInterval(intervalo);
-            }, [buscar_pares]);
+            // Busca única ao montar
+            useEffect(() => { buscarDados(); }, [buscarDados]);
 
-            return { pares, estado_carregamento, erro, ultima_atualizacao, buscar_pares };
+            return { pares, estado, fase, prog, erro, atualizado, stats, buscarDados, atualizarFiltradas, atualizandoFiltradas };
         }
 
-        function _eh_par_valido(ticker) {
-            const market = String(ticker.market || '').toLowerCase();
-            const symbol = String(ticker.symbol || '');
-            
-            return (
-                market.includes('bybit') &&
-                symbol.endsWith('USDT') &&
-                (ticker.contract_type || '').toLowerCase() === 'perpetual' &&
-                ticker.price_percentage_change_24h != null
+        // ============================================================
+        // Helpers de formatação
+        // ============================================================
+        function fmtUSD(v) {
+            if (!v || v <= 0) return '$0';
+            if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+            if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+            if (v >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
+            return `$${v.toFixed(0)}`;
+        }
+
+        function fmtPreco(p) {
+            if (p >= 1000) return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(p);
+            if (p >= 1)    return `$${p.toFixed(4)}`;
+            return `$${p.toFixed(8)}`;
+        }
+
+        function corRSI(rsi) {
+            if (rsi === null) return 'text-slate-500';
+            if (rsi < F.RSI_MIN || rsi > F.RSI_MAX) return 'text-red-400';
+            if (Math.abs(rsi - 50) < 8) return 'text-green-400';
+            return 'text-yellow-400';
+        }
+
+        function corGanho(g, min, max) {
+            if (g === null) return 'text-slate-500';
+            const abs = Math.abs(g);
+            if (abs >= min && abs <= max) return g > 0 ? 'text-green-400' : 'text-red-400';
+            return 'text-slate-500';
+        }
+
+        // ============================================================
+        // Componentes de célula
+        // ============================================================
+        function CelulaMudanca({ v }) {
+            const cor = v >= 0 ? 'text-green-500' : 'text-red-500';
+            return React.createElement('span', { className: `font-semibold ${cor}` },
+                `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
+        }
+
+        function CelulaVolumeVola({ vol, vola }) {
+            const vOk = vol >= F.VOL_MIN_USD;
+            const vtOk = vola >= F.VOLA_MIN && vola <= F.VOLA_MAX;
+            const vtCor = vtOk ? 'text-green-400' : (vola > F.VOLA_MAX ? 'text-red-400' : 'text-slate-500');
+            return React.createElement('div', { className: 'text-xs flex flex-col gap-0.5' },
+                React.createElement('span', { className: vOk ? 'text-cyan-400' : 'text-slate-500' }, fmtUSD(vol)),
+                React.createElement('span', { className: vtCor }, `${vola?.toFixed(1) ?? '—'}% 24h`),
             );
         }
 
-        function formatar_preco(preco) {
-            if (preco >= 1000) {
-                return new Intl.NumberFormat('pt-BR', {
-                    style: 'currency',
-                    currency: 'USD',
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                }).format(preco).replace('US$', '$');
-            } else if (preco >= 1) {
-                return `$${preco.toFixed(4)}`;
-            } else {
-                return `$${preco.toFixed(8)}`;
-            }
-        }
-
-        function CelulaMudanca({ percentual }) {
-            const classe_cor = percentual >= 0 ? 'text-green-500' : 'text-red-500';
-            return React.createElement('span', {
-                className: `font-semibold ${classe_cor}`
-            }, `${percentual >= 0 ? '+' : ''}${percentual.toFixed(2)}%`);
-        }
-
-        function LinhaTabela({ par, metricas }) {
-            const is_stale = metricas && metricas.timestamp && (Date.now() - metricas.timestamp) > 5000;
-            const bybit_cls = `px-3 py-3 text-center${is_stale ? ' opacity-60' : ''}`;
-            const bybit_title = is_stale ? '⚠️ Dados Bybit desatualizados (>5s)' : undefined;
-            return React.createElement('tr', {
-                className: "border-b border-slate-700 hover:bg-slate-800/50 transition-colors"
-            },
-                React.createElement('td', { className: "px-3 py-3 text-left font-medium text-slate-100 text-sm whitespace-nowrap" }, par.simbolo),
-                React.createElement('td', { className: "px-3 py-3 text-right font-mono text-slate-300 text-sm whitespace-nowrap" }, formatar_preco(par.preco)),
-                React.createElement('td', { className: "px-3 py-3 text-right" }, React.createElement(CelulaMudanca, { percentual: par.percentual_24h })),
-                React.createElement('td', { className: bybit_cls, title: bybit_title }, React.createElement(CelulaMomentum, { momentum: metricas && metricas.momentum })),
-                React.createElement('td', { className: bybit_cls, title: bybit_title }, React.createElement(CelulaRejeicao, { rejeicao: metricas && metricas.rejeicao })),
-                React.createElement('td', { className: bybit_cls, title: bybit_title }, React.createElement(CelulaSpread, { liquidez: metricas && metricas.liquidez })),
-                React.createElement('td', { className: bybit_cls, title: bybit_title }, React.createElement(CelulaScore, { score: metricas && metricas.score })),
-                React.createElement('td', { className: bybit_cls, title: bybit_title }, React.createElement(CelulaStatusFiltros, {
-                    momentum: metricas && metricas.momentum,
-                    rejeicao: metricas && metricas.rejeicao,
-                    liquidez: metricas && metricas.liquidez,
-                    volume_ratio: metricas && metricas.volume_ratio,
-                    volatilidade_pct: metricas && metricas.volatilidade_pct
-                }))
+        function CelulaRSI({ rsi1h, rsi15m }) {
+            return React.createElement('div', { className: 'text-xs flex flex-col gap-0.5' },
+                React.createElement('span', { className: corRSI(rsi1h) },  `1h:  ${rsi1h  !== null ? rsi1h.toFixed(0)  : '—'}`),
+                React.createElement('span', { className: corRSI(rsi15m) }, `15m: ${rsi15m !== null ? rsi15m.toFixed(0) : '—'}`),
             );
         }
 
-        function AplicacaoTopGainers() {
-            const { pares, estado_carregamento, erro, ultima_atualizacao, buscar_pares } = useFetchTopGainers();
-            const [pesos_config, setPesosConfig] = useState({ ...SCORE_PESOS });
-            const { metricas_map, bybit_disponivel, bybit_carregando, ultima_atualizacao_bybit } = useBybitMetrics(pares, pesos_config);
-            const pares_ordenados = useMemo(() => {
-                if (!Object.keys(metricas_map).length) return pares.slice(0, 20);
-                const com_score = pares.map(par => ({ ...par, score: metricas_map[par.simbolo] ? metricas_map[par.simbolo].score : 0 }));
-                return ordenar_por_score(com_score).slice(0, 20);
-            }, [pares, metricas_map]);
+        function CelulaMomentum({ g1h, g4h }) {
+            const fmt = (v, label) => {
+                if (v === null) return `${label}: —`;
+                return `${v >= 0 ? '↑' : '↓'}${label}: ${Math.abs(v).toFixed(1)}%`;
+            };
+            return React.createElement('div', { className: 'text-xs flex flex-col gap-0.5' },
+                React.createElement('span', { className: corGanho(g1h, F.MOM_1H_MIN, F.MOM_1H_MAX) }, fmt(g1h, '1h')),
+                React.createElement('span', { className: corGanho(g4h, F.MOM_4H_MIN, F.MOM_4H_MAX) }, fmt(g4h, '4h')),
+            );
+        }
 
-            useEffect(() => { limpar_historico_antigo(); }, []);
+        function CelulaLiquidez({ spread, dBid, dAsk }) {
+            const sOk  = spread <= F.SPREAD_MAX;
+            const sCor = sOk ? 'text-green-400' : (spread < 0.1 ? 'text-yellow-400' : 'text-red-400');
+            const bOk  = dBid >= F.DEPTH_MIN;
+            const aOk  = dAsk >= F.DEPTH_MIN;
+            return React.createElement('div', { className: 'text-xs flex flex-col gap-0.5' },
+                React.createElement('span', { className: sCor }, `${spread?.toFixed(3) ?? '—'}%`),
+                React.createElement('span', { className: aOk ? 'text-emerald-400' : 'text-slate-500' }, `↑${fmtUSD(dAsk)}`),
+                React.createElement('span', { className: bOk ? 'text-orange-400' : 'text-slate-500' },  `↓${fmtUSD(dBid)}`),
+            );
+        }
 
-            return React.createElement('div', {
-                className: "min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
-            },
+        function CelulaScore({ score, filtrosOk }) {
+            if (score == null) return React.createElement('span', { className: 'text-slate-500 text-xs' }, '—');
+            const ind = score > 70 ? '🟢' : (score >= 50 ? '🟡' : '🔴');
+            return React.createElement('div', { className: 'flex flex-col items-center gap-0.5' },
+                React.createElement('div', { className: 'flex items-center gap-1' },
+                    React.createElement('span', null, ind),
+                    React.createElement('span', { className: 'font-bold text-white' }, score),
+                ),
+                React.createElement('span', { className: 'text-slate-500 text-xs' }, `${filtrosOk}/9`),
+            );
+        }
+
+        function CelulaFiltros({ filtros }) {
+            if (!filtros) return React.createElement('span', { className: 'text-slate-500 text-xs' }, '—');
+            const items = [
+                { k: 'V',   ok: filtros.volume,       t: `Vol > $${F.VOL_MIN_USD/1e6}M` },
+                { k: 'Vt',  ok: filtros.volatilidade,  t: `Volatil. ${F.VOLA_MIN}-${F.VOLA_MAX}%` },
+                { k: 'R1',  ok: filtros.rsi_1h,        t: `RSI 1h: ${F.RSI_MIN}-${F.RSI_MAX}` },
+                { k: 'R5',  ok: filtros.rsi_15m,       t: `RSI 15m: ${F.RSI_MIN}-${F.RSI_MAX}` },
+                { k: 'M1',  ok: filtros.momentum_1h,   t: `Mom. 1h: ${F.MOM_1H_MIN}-${F.MOM_1H_MAX}%` },
+                { k: 'M4',  ok: filtros.momentum_4h,   t: `Mom. 4h: ${F.MOM_4H_MIN}-${F.MOM_4H_MAX}%` },
+                { k: 'Vr',  ok: filtros.volume_ratio,  t: `Vol.Ratio: ${F.VRATIO_MIN}-${F.VRATIO_MAX}x` },
+                { k: 'Sp',  ok: filtros.spread,        t: `Spread < ${F.SPREAD_MAX}%` },
+                { k: 'Pr',  ok: filtros.profundidade,  t: `Prof. > $${F.DEPTH_MIN/1e3}K cada lado` },
+            ];
+            return React.createElement('div', { className: 'flex gap-0.5 items-center justify-center flex-wrap' },
+                items.map(f => React.createElement('span', { key: f.k, title: f.t, className: 'text-xs cursor-help' },
+                    f.ok ? '✅' : '❌')));
+        }
+
+        function BarraProgresso({ prog, fase }) {
+            return React.createElement('div', { className: 'px-8 py-6 space-y-3' },
+                React.createElement('div', { className: 'flex justify-between items-center text-xs text-slate-400' },
+                    React.createElement('span', { className: 'truncate max-w-xs' }, fase),
+                    React.createElement('span', { className: 'text-cyan-400 font-medium ml-2' }, `${prog}%`),
+                ),
+                React.createElement('div', { className: 'w-full bg-slate-700/50 rounded-full h-1.5' },
+                    React.createElement('div', {
+                        className: 'bg-gradient-to-r from-cyan-600 to-cyan-400 h-1.5 rounded-full transition-all duration-500',
+                        style: { width: `${prog}%` },
+                    }),
+                ),
+            );
+        }
+
+        function LinhaTabela({ par }) {
+            return React.createElement('tr', { className: 'border-b border-slate-700 hover:bg-slate-800/50 transition-colors' },
+                // Par + rank
+                React.createElement('td', { className: 'px-3 py-3 text-left' },
+                    React.createElement('div', { className: 'flex flex-col' },
+                        React.createElement('span', { className: 'font-medium text-slate-100 text-sm' }, par.simbolo),
+                        React.createElement('span', { className: 'text-slate-500 text-xs' }, `#${par.rank} MktCap`),
+                    ),
+                ),
+                // Preço
+                React.createElement('td', { className: 'px-3 py-3 text-right font-mono text-slate-300 text-sm whitespace-nowrap' },
+                    fmtPreco(par.preco)),
+                // 24h%
+                React.createElement('td', { className: 'px-3 py-3 text-right' },
+                    React.createElement(CelulaMudanca, { v: par.ganho_24h })),
+                // Volume + Volatilidade
+                React.createElement('td', { className: 'px-3 py-3 text-center' },
+                    React.createElement(CelulaVolumeVola, { vol: par.volume_usd_24h, vola: par.volatilidade_24h })),
+                // RSI
+                React.createElement('td', { className: 'px-3 py-3 text-center' },
+                    React.createElement(CelulaRSI, { rsi1h: par.rsi_1h, rsi15m: par.rsi_15m })),
+                // Momentum
+                React.createElement('td', { className: 'px-3 py-3 text-center' },
+                    React.createElement(CelulaMomentum, { g1h: par.ganho_1h, g4h: par.ganho_4h })),
+                // Spread / Profundidade
+                React.createElement('td', { className: 'px-3 py-3 text-center' },
+                    React.createElement(CelulaLiquidez, { spread: par.spread_pct, dBid: par.depth_bid, dAsk: par.depth_ask })),
+                // Score
+                React.createElement('td', { className: 'px-3 py-3 text-center' },
+                    React.createElement(CelulaScore, { score: par.score, filtrosOk: par.filtrosOk })),
+                // Filtros
+                React.createElement('td', { className: 'px-3 py-3 text-center' },
+                    React.createElement(CelulaFiltros, { filtros: par.filtros })),
+            );
+        }
+
+        // ============================================================
+        // App principal
+        // ============================================================
+        function App() {
+            const { pares, estado, fase, prog, erro, atualizado, stats, buscarDados, atualizarFiltradas, atualizandoFiltradas } = useScalpingData();
+            const carregando = estado === 'carregando';
+
+            const cabecalhos = [
+                { label: 'Par',             align: 'text-left' },
+                { label: 'Preço',           align: 'text-right' },
+                { label: '24h %',           align: 'text-right' },
+                { label: 'Vol / Volatil.',  align: 'text-center' },
+                { label: 'RSI',             align: 'text-center' },
+                { label: 'Momentum',        align: 'text-center' },
+                { label: 'Spread / Prof.',  align: 'text-center' },
+                { label: 'Score',           align: 'text-center' },
+                { label: 'Filtros (9)',     align: 'text-center' },
+            ];
+
+            return React.createElement('div', { className: 'min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950' },
+                // Background grid
                 React.createElement('div', {
-                    className: "absolute inset-0 opacity-5 pointer-events-none",
+                    className: 'absolute inset-0 opacity-5 pointer-events-none',
                     style: {
                         backgroundImage: 'linear-gradient(0deg, transparent 24%, rgba(15,23,42,0.3) 25%, rgba(15,23,42,0.3) 26%, transparent 27%, transparent 74%, rgba(15,23,42,0.3) 75%, rgba(15,23,42,0.3) 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, rgba(15,23,42,0.3) 25%, rgba(15,23,42,0.3) 26%, transparent 27%, transparent 74%, rgba(15,23,42,0.3) 75%, rgba(15,23,42,0.3) 76%, transparent 77%, transparent)',
-                        backgroundSize: '50px 50px'
-                    }
+                        backgroundSize: '50px 50px',
+                    },
                 }),
-                React.createElement('div', {
-                    className: "relative z-10 max-w-7xl mx-auto px-4 py-12"
-                },
-                    React.createElement('div', {
-                        className: "mb-12 text-center"
-                    },
-                        React.createElement('div', {
-                            className: "flex items-center justify-center gap-3 mb-4"
-                        },
-                            React.createElement('div', {
-                                className: "relative"
-                            },
-                                React.createElement('div', {
-                                    className: "absolute inset-0 bg-cyan-500 blur-xl opacity-30 rounded-full"
-                                }),
+
+                React.createElement('div', { className: 'relative z-10 max-w-7xl mx-auto px-4 py-12' },
+
+                    // Header
+                    React.createElement('div', { className: 'mb-12 text-center' },
+                        React.createElement('div', { className: 'flex items-center justify-center gap-3 mb-4' },
+                            React.createElement('div', { className: 'relative' },
+                                React.createElement('div', { className: 'absolute inset-0 bg-cyan-500 blur-xl opacity-30 rounded-full' }),
                                 React.createElement('svg', {
-                                    className: "relative w-12 h-12 text-cyan-400",
-                                    width: "24",
-                                    height: "24",
-                                    viewBox: "0 0 24 24",
-                                    fill: "none",
-                                    stroke: "currentColor",
-                                    strokeWidth: "1.5",
-                                    strokeLinecap: "round",
-                                    strokeLinejoin: "round"
-                                }, React.createElement('polyline', { points: "23 6 13.5 15.5 8.5 10.5 1 17" }),
-                                   React.createElement('polyline', { points: "17 6 23 6 23 12" }))
-                            ),
-                            React.createElement('h1', {
-                                className: "text-5xl font-bold text-white tracking-tight"
-                            }, "Top 20 por Score")
-                        ),
-                        React.createElement('p', {
-                            className: "text-slate-400 text-lg mb-2"
-                        }, "Pares Perpétuos USDT da Bybit"),
-                        React.createElement('p', {
-                            className: "text-slate-500 text-sm"
-                        }, "Melhores oportunidades por Score Scalping")
-                    ),
-                    React.createElement('div', {
-                        className: "bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-xl shadow-2xl overflow-hidden"
-                    },
-                        React.createElement('div', {
-                            className: "flex items-center justify-between px-8 py-5 bg-slate-800/40 border-b border-slate-800"
-                        },
-                            React.createElement('div', { className: "flex flex-col gap-1" },
-                                React.createElement('div', { className: "text-sm text-slate-400" },
-                                    ultima_atualizacao && React.createElement(Fr, null,
-                                        "🔵 CoinGecko: ",
-                                        React.createElement('span', { className: "text-cyan-400 font-semibold" }, ultima_atualizacao)
-                                    )
-                                ),
-                                bybit_disponivel
-                                    ? ultima_atualizacao_bybit && React.createElement('div', { className: "text-xs text-slate-500" },
-                                        "🟡 Bybit: ", new Date(ultima_atualizacao_bybit).toLocaleTimeString('pt-BR'))
-                                    : React.createElement('div', { className: "text-xs text-slate-400" }, "⚫ Usando dados CoinGecko apenas")
-                            ),
-                            React.createElement('div', { className: 'flex items-center gap-2' },
-                                React.createElement(ConfigPesos, { pesos: pesos_config, setPesos: setPesosConfig }),
-                                React.createElement('button', {
-                                    onClick: buscar_pares,
-                                    disabled: estado_carregamento || bybit_carregando,
-                                    className: "inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-medium text-sm"
+                                    className: 'relative w-12 h-12 text-cyan-400',
+                                    viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+                                    strokeWidth: '1.5', strokeLinecap: 'round', strokeLinejoin: 'round',
                                 },
+                                    React.createElement('polyline', { points: '23 6 13.5 15.5 8.5 10.5 1 17' }),
+                                    React.createElement('polyline', { points: '17 6 23 6 23 12' }),
+                                ),
+                            ),
+                            React.createElement('h1', { className: 'text-5xl font-bold text-white tracking-tight' }, 'Scalping Scanner'),
+                        ),
+                        React.createElement('p', { className: 'text-slate-400 text-lg mb-2' }, 'Pares Perpétuos USDT da Bybit'),
+                        React.createElement('p', { className: 'text-slate-500 text-sm' }, 'Top 200 por Market Cap · 9 Filtros de Scalping'),
+                    ),
+
+                    // Main card
+                    React.createElement('div', { className: 'bg-slate-900/60 backdrop-blur-xl border border-slate-800 rounded-xl shadow-2xl overflow-hidden' },
+
+                        // Action bar
+                        React.createElement('div', { className: 'flex items-center justify-between px-8 py-5 bg-slate-800/40 border-b border-slate-800' },
+                            React.createElement('div', { className: 'flex flex-col gap-1' },
+                                atualizado
+                                    ? React.createElement('div', { className: 'text-sm text-slate-400' },
+                                        '🔵 CoinGecko · 🟡 Bybit — ',
+                                        React.createElement('span', { className: 'text-cyan-400 font-semibold' },
+                                            new Date(atualizado).toLocaleTimeString('pt-BR')),
+                                    )
+                                    : React.createElement('div', { className: 'text-sm text-slate-500' }, 'Aguardando dados...'),
+                                stats && React.createElement('div', { className: 'text-xs text-slate-500' },
+                                    `${stats.totalBybit} pares Bybit · ${stats.candidatos} candidatos analisados · Top ${stats.exibidos} exibidos`),
+                            ),
+                            React.createElement('button', {
+                                onClick: buscarDados,
+                                disabled: carregando,
+                                className: 'inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-all font-medium text-sm',
+                            },
+                                React.createElement('svg', {
+                                    className: `w-4 h-4 ${carregando ? 'animate-spin' : ''}`,
+                                    viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+                                    strokeWidth: '2', strokeLinecap: 'round', strokeLinejoin: 'round',
+                                },
+                                    React.createElement('polyline', { points: '23 4 23 10 17 10' }),
+                                    React.createElement('polyline', { points: '1 20 1 14 7 14' }),
+                                    React.createElement('path', { d: 'M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36' }),
+                                ),
+                                carregando ? 'Analisando...' : 'Atualizar',
+                            ),
+                            // Botão atualizar só os pares filtrados
+                            pares.length > 0 && React.createElement('button', {
+                                onClick: atualizarFiltradas,
+                                disabled: carregando || atualizandoFiltradas,
+                                title: 'Atualiza RSI, momentum e liquidez apenas dos pares já exibidos',
+                                className: 'inline-flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 rounded-lg transition-all font-medium text-sm',
+                            },
+                                React.createElement('svg', {
+                                    className: `w-4 h-4 ${atualizandoFiltradas ? 'animate-spin' : ''}`,
+                                    viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+                                    strokeWidth: '2', strokeLinecap: 'round', strokeLinejoin: 'round',
+                                },
+                                    React.createElement('polyline', { points: '23 4 23 10 17 10' }),
+                                    React.createElement('polyline', { points: '1 20 1 14 7 14' }),
+                                    React.createElement('path', { d: 'M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36' }),
+                                ),
+                                atualizandoFiltradas ? 'Atualizando...' : '🔄️ filtradas',
+                            ),
+                        ),
+
+                        // Legend bar
+                        React.createElement('div', { className: 'px-6 py-2 bg-slate-800/20 border-b border-slate-800 flex flex-wrap gap-x-4 gap-y-1 items-center text-xs' },
+                            React.createElement('span', { className: 'text-slate-400' },
+                                React.createElement('span', { className: 'text-blue-400 font-medium' }, '🔵 CoinGecko:'),
+                                ' Ranking · Market Cap',
+                            ),
+                            React.createElement('span', { className: 'text-slate-400' },
+                                React.createElement('span', { className: 'text-yellow-400 font-medium' }, '🟡 Bybit:'),
+                                ' RSI · Momentum · Spread · Profundidade · Score',
+                            ),
+                            React.createElement('span', { className: 'text-slate-500 ml-auto text-xs' },
+                                '⚡ Dados carregados sob demanda · sem atualização automática',
+                            ),
+                        ),
+
+                        // Content
+                        erro
+                            ? React.createElement('div', { className: 'p-8' },
+                                React.createElement('div', { className: 'flex items-start gap-3 p-4 bg-red-950/30 border border-red-800/50 rounded-lg' },
                                     React.createElement('svg', {
-                                        className: `w-4 h-4 ${(estado_carregamento || bybit_carregando) ? 'animate-spin' : ''}`,
-                                        width: "24",
-                                        height: "24",
-                                        viewBox: "0 0 24 24",
-                                        fill: "none",
-                                        stroke: "currentColor",
-                                        strokeWidth: "2",
-                                        strokeLinecap: "round",
-                                        strokeLinejoin: "round"
-                                    }, React.createElement('polyline', { points: "23 4 23 10 17 10" }),
-                                       React.createElement('polyline', { points: "1 20 1 14 7 14" }),
-                                       React.createElement('path', { d: "M3.51 9a9 9 0 0 1 14.85-3.36M20.49 15a9 9 0 0 1-14.85 3.36" })),
-                                    estado_carregamento ? "Buscando pares..." : bybit_carregando ? "Calculando scores..." : "Atualizar"
-                                )
-                            )
-                        ),
-                        React.createElement(DashboardStatus, { ultima_atualizacao_bybit, bybit_disponivel }),
-                        erro ? React.createElement('div', {
-                            className: "p-8"
-                        },
-                            React.createElement('div', {
-                                className: "flex items-start gap-3 p-4 bg-red-950/30 border border-red-800/50 rounded-lg"
-                            },
-                                React.createElement('svg', {
-                                    className: "w-5 h-5 text-red-400 flex-shrink-0 mt-0.5",
-                                    width: "24",
-                                    height: "24",
-                                    viewBox: "0 0 24 24",
-                                    fill: "none",
-                                    stroke: "currentColor",
-                                    strokeWidth: "2"
-                                }, React.createElement('circle', { cx: "12", cy: "12", r: "10" }),
-                                   React.createElement('line', { x1: "12", y1: "8", x2: "12", y2: "12" }),
-                                   React.createElement('line', { x1: "12", y1: "16", x2: "12.01", y2: "16" })),
-                                React.createElement('p', {
-                                    className: "text-red-200"
-                                }, erro)
-                            )
-                        ) : estado_carregamento && pares.length === 0 ? React.createElement('div', {
-                            className: "p-12 text-center"
-                        },
-                            React.createElement('div', {
-                                className: "inline-flex flex-col items-center gap-4"
-                            },
-                                React.createElement('div', {
-                                    className: "relative w-12 h-12"
-                                },
-                                    React.createElement('div', {
-                                        className: "absolute inset-0 bg-cyan-500 rounded-full animate-pulse"
-                                    }),
-                                    React.createElement('div', {
-                                        className: "absolute inset-2 bg-slate-900 rounded-full"
-                                    })
+                                        className: 'w-5 h-5 text-red-400 flex-shrink-0 mt-0.5',
+                                        viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: '2',
+                                    },
+                                        React.createElement('circle', { cx: '12', cy: '12', r: '10' }),
+                                        React.createElement('line',   { x1: '12', y1: '8',  x2: '12',    y2: '12' }),
+                                        React.createElement('line',   { x1: '12', y1: '16', x2: '12.01', y2: '16' }),
+                                    ),
+                                    React.createElement('p', { className: 'text-red-200' }, erro),
                                 ),
-                                React.createElement('p', {
-                                    className: "text-slate-400"
-                                }, "Carregando dados...")
                             )
-                        ) : pares.length === 0 ? React.createElement('div', {
-                            className: "p-8 text-center text-slate-400"
-                        }, "Nenhum par encontrado") : React.createElement('div', {
-                            className: "overflow-x-auto"
-                        },
-                            React.createElement('table', {
-                                className: "w-full"
-                            },
-                                React.createElement('thead', null,
-                                    React.createElement('tr', { className: "bg-slate-800/60 border-b border-slate-700" },
-                                        React.createElement('th', { className: "px-3 py-4 text-left text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "Par"),
-                                        React.createElement('th', { className: "px-3 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "Preço"),
-                                        React.createElement('th', { className: "px-3 py-4 text-right text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "24h %"),
-                                        React.createElement('th', { className: "px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "Momentum 1h/4h"),
-                                        React.createElement('th', { className: "px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "Rejeição"),
-                                        React.createElement('th', { className: "px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "Spread / Liquidez"),
-                                        React.createElement('th', { className: "px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "Score Scalping"),
-                                        React.createElement('th', { className: "px-3 py-4 text-center text-xs font-semibold text-slate-300 uppercase tracking-wider" }, "Status Filtros")
+                            : carregando
+                                ? React.createElement(BarraProgresso, { prog, fase })
+                                : pares.length === 0
+                                    ? React.createElement('div', { className: 'p-12 text-center text-slate-400' },
+                                        estado === 'idle'
+                                            ? React.createElement('div', { className: 'inline-flex flex-col items-center gap-4' },
+                                                React.createElement('div', { className: 'relative w-12 h-12' },
+                                                    React.createElement('div', { className: 'absolute inset-0 bg-cyan-500 rounded-full animate-pulse' }),
+                                                    React.createElement('div', { className: 'absolute inset-2 bg-slate-900 rounded-full' }),
+                                                ),
+                                                React.createElement('p', null, 'Carregando dados...'),
+                                            )
+                                            : 'Nenhum par encontrou os critérios. Tente atualizar.',
                                     )
-                                ),
-                                React.createElement('tbody', null,
-                                    pares_ordenados.map((par) => React.createElement(LinhaTabela, {
-                                        key: par.simbolo,
-                                        par: par,
-                                        metricas: metricas_map[par.simbolo]
-                                    }))
-                                )
-                            )
+                                    : React.createElement('div', { className: 'overflow-x-auto' },
+                                        React.createElement('table', { className: 'w-full' },
+                                            React.createElement('thead', null,
+                                                React.createElement('tr', { className: 'bg-slate-800/60 border-b border-slate-700' },
+                                                    cabecalhos.map(h =>
+                                                        React.createElement('th', {
+                                                            key: h.label,
+                                                            className: `px-3 py-4 ${h.align} text-xs font-semibold text-slate-300 uppercase tracking-wider`,
+                                                        }, h.label),
+                                                    ),
+                                                ),
+                                            ),
+                                            React.createElement('tbody', null,
+                                                pares.map(par => React.createElement(LinhaTabela, { key: par.simbolo, par })),
+                                            ),
+                                        ),
+                                    ),
+
+                        // Footer
+                        pares.length > 0 && React.createElement('div', { className: 'px-8 py-4 bg-slate-800/40 border-t border-slate-800 text-sm text-slate-400' },
+                            '✓ ',
+                            React.createElement('span', { className: 'font-semibold text-slate-300' }, pares.length),
+                            ' pares · ordenados por score · passe o cursor nos filtros para ver critérios',
                         ),
-                        pares.length > 0 && React.createElement('div', {
-                            className: "px-8 py-4 bg-slate-800/40 border-t border-slate-800 text-sm text-slate-400"
-                        },
-                            "✓ ",
-                            React.createElement('span', {
-                                className: "font-semibold text-slate-300"
-                            }, pares.length),
-                            " pares analisados · Top 20 por score exibidos"
-                        )
                     ),
-                    React.createElement('div', {
-                        className: "mt-8 text-center text-xs text-slate-500"
-                    },
+
+                    // Footer info
+                    React.createElement('div', { className: 'mt-8 text-center text-xs text-slate-500' },
                         React.createElement('p', null,
-                            "Dados fornecidos pela ",
-                            React.createElement('span', {
-                                className: "text-slate-400 font-medium"
-                            }, "CoinGecko API")
-                        )
-                    )
-                )
+                            'Dados: ',
+                            React.createElement('span', { className: 'text-slate-400 font-medium' }, 'CoinGecko API'),
+                            ' + ',
+                            React.createElement('span', { className: 'text-slate-400 font-medium' }, 'Bybit API'),
+                            ' · Sem chave de API necessária',
+                        ),
+                    ),
+                ),
             );
         }
 
-        const root = createRoot(document.getElementById('root'));
-        root.render(React.createElement(AplicacaoTopGainers));
+        createRoot(document.getElementById('root')).render(React.createElement(App));
     </script>
 </body>
 </html>
