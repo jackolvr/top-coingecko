@@ -396,6 +396,126 @@
         }
         // ---- fim US-004 ----
 
+        // ---- US-005: Score Combinado ----
+        const SCORE_HISTORY_KEY = 'scalping_scores_history';
+        const SCORE_HISTORY_MAX = 100;
+
+        // Pesos: momentum(10pts) + rejeicao(20pts) + liquidez(15pts) + volume(30pts) + volatilidade(25pts)
+        const SCORE_PESOS = { momentum: 0.10, rejeicao: 0.20, liquidez: 0.15, volume: 0.30, volatilidade: 0.25 };
+
+        function _normalizar_momentum(momentum) {
+            if (!momentum || momentum.status === 'sem_dados') return 0;
+            if (momentum.status === 'em_formacao_confirmada') return 100;
+            if (momentum.status === 'em_formacao') return 50;
+            return 0;
+        }
+
+        function _normalizar_rejeicao(rejeicao) {
+            if (!rejeicao || !rejeicao.tem_rejeicao) return 0;
+            return (rejeicao.forca / 10) * 100;
+        }
+
+        function _normalizar_liquidez(liquidez) {
+            if (!liquidez) return 0;
+            if (liquidez.tem_liquidez) return 100;
+            const min_cost = Math.min(liquidez.cost_to_move_up_usd || 0, liquidez.cost_to_move_down_usd || 0);
+            if (min_cost <= 0) return 0;
+            return Math.min(100, (min_cost / COST_TO_MOVE_MIN_USD) * 100);
+        }
+
+        function _extrair_metricas_candlestick(candlesticks) {
+            if (!candlesticks || candlesticks.length === 0) return { volume_ratio: 0, volatilidade_pct: 0 };
+            const por_intervalo = {};
+            candlesticks.forEach(c => {
+                if (!por_intervalo[c.interval]) por_intervalo[c.interval] = [];
+                por_intervalo[c.interval].push(c);
+            });
+            let total_volume_ratio = 0;
+            let total_volatilidade = 0;
+            let count = 0;
+            for (const candles of Object.values(por_intervalo)) {
+                if (candles.length === 0) continue;
+                const vela = candles[0]; // mais recente
+                const sma = candles.reduce((sum, c) => sum + c.volume, 0) / candles.length;
+                const volume_ratio = sma > 0 ? vela.volume / sma : 1;
+                const volatilidade_pct = vela.close > 0 ? ((vela.high - vela.low) / vela.close) * 100 : 0;
+                total_volume_ratio += volume_ratio;
+                total_volatilidade += volatilidade_pct;
+                count++;
+            }
+            return {
+                volume_ratio: count > 0 ? total_volume_ratio / count : 0,
+                volatilidade_pct: count > 0 ? total_volatilidade / count : 0
+            };
+        }
+
+        function _normalizar_volume(volume_ratio) {
+            // volume_ratio: 1 = médio, 3+ = excelente para scalping
+            if (volume_ratio <= 0) return 0;
+            return Math.min(100, (volume_ratio / 3) * 100);
+        }
+
+        function _normalizar_volatilidade(volatilidade_pct) {
+            // Faixa ótima para scalping: 1-5%
+            if (volatilidade_pct <= 0) return 0;
+            if (volatilidade_pct < 1) return volatilidade_pct * 60;
+            if (volatilidade_pct <= 5) return 60 + ((volatilidade_pct - 1) / 4) * 40;
+            // Acima de 5%: muito volátil, penalizar progressivamente
+            return Math.max(0, 100 - (volatilidade_pct - 5) * 10);
+        }
+
+        function _salvar_score_historico(moeda, score) {
+            try {
+                const historico = JSON.parse(localStorage.getItem(SCORE_HISTORY_KEY) || '[]');
+                historico.push({ moeda, score, timestamp: Date.now() });
+                if (historico.length > SCORE_HISTORY_MAX) {
+                    historico.splice(0, historico.length - SCORE_HISTORY_MAX);
+                }
+                localStorage.setItem(SCORE_HISTORY_KEY, JSON.stringify(historico));
+            } catch (e) {
+                console.warn('[Score] Falha ao salvar histórico:', e);
+            }
+        }
+
+        function calcular_score_combinado(moeda, metricas) {
+            const { momentum, rejeicao, liquidez, candlesticks } = metricas || {};
+
+            const n_momentum = _normalizar_momentum(momentum);
+            const n_rejeicao = _normalizar_rejeicao(rejeicao);
+            const n_liquidez = _normalizar_liquidez(liquidez);
+            const { volume_ratio, volatilidade_pct } = _extrair_metricas_candlestick(candlesticks || []);
+            const n_volume = _normalizar_volume(volume_ratio);
+            const n_volatilidade = _normalizar_volatilidade(volatilidade_pct);
+
+            const score_bruto =
+                n_momentum * SCORE_PESOS.momentum +
+                n_rejeicao * SCORE_PESOS.rejeicao +
+                n_liquidez * SCORE_PESOS.liquidez +
+                n_volume * SCORE_PESOS.volume +
+                n_volatilidade * SCORE_PESOS.volatilidade;
+
+            const score = Math.min(100, Math.max(0, Math.round(score_bruto)));
+
+            const breakdown = {
+                momentum: Math.round(n_momentum * SCORE_PESOS.momentum * 10) / 10,
+                rejeicao: Math.round(n_rejeicao * SCORE_PESOS.rejeicao * 10) / 10,
+                liquidez: Math.round(n_liquidez * SCORE_PESOS.liquidez * 10) / 10,
+                volume: Math.round(n_volume * SCORE_PESOS.volume * 10) / 10,
+                volatilidade: Math.round(n_volatilidade * SCORE_PESOS.volatilidade * 10) / 10
+            };
+
+            _salvar_score_historico(moeda, score);
+            return { score, breakdown };
+        }
+
+        function ordenar_por_score(moedas_com_score) {
+            return [...moedas_com_score].sort((a, b) => {
+                if (b.score !== a.score) return b.score - a.score;
+                return b.percentual_24h - a.percentual_24h;
+            });
+        }
+        // ---- fim US-005 ----
+
         function useFetchTopGainers() {
             const [estado_carregamento, setEstadoCarregamento] = useState(true);
             const [erro, setErro] = useState(null);
